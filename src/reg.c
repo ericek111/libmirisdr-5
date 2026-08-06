@@ -39,11 +39,15 @@ failed:
 #define CMD_START_STREAMING    0x43
 #define CMD_DOWNLOAD           0x44
 #define CMD_STOP_STREAMING     0x45
-//WValue = Addr?
+/* wValue = EEPROM address, wLength = byte count, capped at 0x40 by the
+ * bridge firmware. Reaches a dedicated SPI serial-memory engine in the
+ * MSi2500, not a bit-banged GPIO chip select. */
 #define CMD_REEPROM            0x46
-//WValue = Addr?
 #define CMD_WEEPROM            0x47
-#define CMD_READ_UNKNOWN       0x48
+/* Returns one byte of USB-controller status from the MSi2500's own register
+ * block. It touches neither the tuner nor the converters, which is why no
+ * driver has ever found a use for it. Named CMD_READ_UNKNOWN historically. */
+#define CMD_READ_USB_STATUS    0x48
 //wValue = gpio << 8 | val
 #define CMD_WGPIO              0x49
 #define CMD_EXT_WGPIO_BASE     0x4b

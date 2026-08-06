@@ -27,6 +27,30 @@
 //GPIO0 - DAB notch
 //GPIO2 - Broadcast FM notch
 
+/*
+ * The last column is the word written to MSi2500 register 0x08. It is not an
+ * opaque band pattern; it decomposes as:
+ *
+ *      bits 15:12   GPIO output enable, one bit per pin (GPIO_0 .. GPIO_3)
+ *      bits 11:8    GPIO output data,   one bit per pin (GPIO_0 .. GPIO_3)
+ *      bit  7       lock LED
+ *
+ * The MSi2500 has exactly four GPIO pins, so there is no GPIO_4..GPIO_7; the
+ * upper nibble is direction, not more data. Every word in both plans below uses
+ * enable nibble 0xf, i.e. all four pins driven as outputs, which is only safe on
+ * a board that puts nothing else on them. The MSi2500 datasheet's reference
+ * application uses GPIO_0 for EEPROM read-data, GPIO_1 for the EEPROM chip
+ * select, GPIO_2 as a memory-size strap and GPIO_3 as an IR receiver input, so a
+ * board with serial memory fitted needs GPIO_0 left as an input -- enable nibble
+ * 0xe -- or it will fight the EEPROM driving that line. The SDRplay service does
+ * exactly that for every hardware version except the RSP1, which has no EEPROM.
+ *
+ * Known data-bit assignments on these boards: GPIO_0 is a DSB/DAB notch, GPIO_2
+ * a broadcast FM notch, GPIO_3 the bias-T.
+ *
+ * Trailing 0x80 in every word is the lock LED; Osmocom's driver clears it on
+ * shutdown by writing the same word with bit 7 low.
+ */
 hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
         {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80},
