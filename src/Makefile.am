@@ -10,10 +10,13 @@ lib_LTLIBRARIES = libmirisdr.la
 libmirisdr_la_SOURCES = libmirisdr.c
 libmirisdr_la_LDFLAGS = -version-info $(LIBVERSION)
 
-bin_PROGRAMS         = miri_sdr miri_fm
+bin_PROGRAMS         = miri_sdr miri_fm miri_test
 
 miri_sdr_SOURCES     = miri_sdr.c
 miri_sdr_LDADD       = libmirisdr.la
 
 miri_fm_SOURCES     = miri_fm.c
 miri_fm_LDADD       = libmirisdr.la $(LIBM)
+
+miri_test_SOURCES    = miri_test.c
+miri_test_LDADD      = libmirisdr.la $(LIBM)
