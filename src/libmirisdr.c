@@ -122,7 +122,18 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->lost_events = 0;
     dev->desync_events = 0;
 
-    dev->hw_flavour = MIRISDR_HW_DEFAULT;
+    /*
+     * Ask the hardware which plan it wants before falling back to a guess. The
+     * caller can still override with mirisdr_set_hw_flavour(); this only picks
+     * a better default than a fixed one, and leaves the fixed one in place when
+     * the probe cannot tell.
+     */
+    {
+        int detected = mirisdr_detect_hw_flavour(dev);
+
+        dev->hw_flavour = (detected < 0) ? MIRISDR_HW_DEFAULT
+                                         : (mirisdr_hw_flavour_t) detected;
+    }
 
     /* ISOC is more stable but works only on Unix systems */
 #if !defined (_WIN32) || defined(__MINGW32__)
@@ -379,6 +390,93 @@ int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, 
     memset(serial, 0, 256);
 
     return 0;
+}
+
+/*
+ * Work out which board this is, by asking what it pulls its GPIO lines to.
+ *
+ * Two boards enumerate identically as 1df7:2500 and need different band-select
+ * words: one is driven by the SDRplay plan, the other only by the default one,
+ * and choosing wrong leaves the receiver deaf with nothing reported anywhere.
+ * The USB descriptors are no help -- both answer bcdDevice 2.00, 400 mA, four
+ * alternate settings and no string descriptors at all.
+ *
+ * The boards differ below that. Register 0x08 is write-only, but its bits 15:12
+ * are per-pin output enables and register 0x06 reads the pins back, bits 2:0
+ * being GPIO_2, GPIO_1 and GPIO_0. Release a pin and it settles to whatever the
+ * board pulls it to, which is a property of the board and not of the chip.
+ * Measured, the two are a clean inversion: all three pulled up on one, all three
+ * pulled down on the other.
+ *
+ * Two safeguards are load bearing.
+ *
+ * GPIO_3 is never released. On RSP1-style hardware it is the bias tee and it
+ * floats high, so releasing it switches DC onto the antenna port -- which is
+ * how a board was taken off the USB bus during this work. GPIO_0 to GPIO_2
+ * discriminate on their own, so there is no reason to touch it. Note this also
+ * makes Osmocom's init word 0x006680 worth avoiding here: its enable nibble of
+ * 0x6 releases GPIO_3 along with GPIO_0.
+ *
+ * And the answer is only accepted if it does not follow the data latch. The
+ * pins are read once with the latch written low and once with it written high;
+ * if the two disagree the readback is reporting the latch rather than the pin,
+ * and this returns -1 rather than guess. The caller keeps whatever it had.
+ */
+int mirisdr_detect_hw_flavour (mirisdr_dev_t *p) {
+    long lo, hi;
+
+    if (!p) goto failed;
+    if (!p->dh) goto failed;
+
+    /* enable nibble 8: GPIO_3 driven low, GPIO_0..2 released */
+    mirisdr_write_reg(p, 0x08, 0x008080);
+    lo = mirisdr_read_reg(p, 0x06);
+    mirisdr_write_reg(p, 0x08, 0x008780);
+    hi = mirisdr_read_reg(p, 0x06);
+
+    /* leave the pins driven again; the caller's band word follows shortly */
+    mirisdr_write_reg(p, 0x08, 0x00f380);
+
+    if ((lo < 0) || (hi < 0)) goto failed;
+    if ((lo & 0x07) != (hi & 0x07)) goto failed;      /* it is the latch, not the pin */
+
+    switch (lo & 0x07) {
+    case 0x07: return MIRISDR_HW_SDRPLAY;             /* all pulled up   */
+    case 0x00: return MIRISDR_HW_DEFAULT;             /* all pulled down */
+    default:
+        /*
+         * A mixed pattern is a board neither of the two measured ones, so fall
+         * back to the single line that carries the answer rather than guess
+         * from the group.
+         *
+         * The two plans are separated exactly by bit 9, GPIO_1: every word in
+         * the SDRplay plan leaves it clear and every word in the default plan
+         * sets it. There is no overlap. And on both boards measured, the pull
+         * is the opposite of what the correct plan drives -- the RSP1-style
+         * board pulls GPIO_1 up and wants the plan that leaves it low, the
+         * generic board pulls it down and wants the plan that drives it high.
+         *
+         * Read that as the board idling the line and the plan asserting it, and
+         * one bit decides. It reproduces both known boards, and unlike a
+         * majority vote across three pins it has a mechanism behind it rather
+         * than a pattern fitted to two samples.
+         */
+        return ((lo >> 1) & 0x01) ? MIRISDR_HW_SDRPLAY : MIRISDR_HW_DEFAULT;
+    }
+
+failed:
+    /*
+     * Reached only when the readback itself is untrustworthy -- a failed
+     * transfer, or pins that follow the data latch. Deliberately distinct from
+     * an unrecognised pull pattern above: there the hardware answered and the
+     * answer was merely unfamiliar, here it did not answer at all, and the
+     * caller should keep whatever it already had rather than take a guess.
+     */
+    return -1;
+}
+
+mirisdr_hw_flavour_t mirisdr_get_hw_flavour (mirisdr_dev_t *p) {
+    return p ? p->hw_flavour : MIRISDR_HW_DEFAULT;
 }
 
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {

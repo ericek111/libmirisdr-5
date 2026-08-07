@@ -16,6 +16,40 @@
  */
 
 
+/*
+ * Read a bridge register.
+ *
+ * Not a mirrored write, and the difference is silent if you get it wrong. The
+ * recipient is the device rather than the endpoint, the request is 0x42 rather
+ * than 0x41, wValue is unused, and the register number goes in wIndex shifted
+ * left by two -- because for reads wIndex is not an encoded register number at
+ * all but a byte offset into a window at 0xc000, four bytes per register.
+ *
+ * Encoding a read as though it mirrored a write returns register 0x00 for every
+ * address, which looks convincingly like a working probe against a register
+ * that happens to hold a plausible value.
+ *
+ * Returns the 24-bit value, or -1. Not every register reads back: 0x08 is
+ * write-only and answers 0, while 0x00, 0x04, 0x05, 0x06 and 0x07 carry real
+ * values -- which of them do so is itself hardware dependent.
+ */
+long mirisdr_read_reg (mirisdr_dev_t *p, uint8_t reg) {
+    unsigned char buf[4] = { 0, 0, 0, 0 };
+
+    if (!p) goto failed;
+    if (!p->dh) goto failed;
+
+    if (libusb_control_transfer(p->dh, 0xc0, 0x42, 0, (uint16_t) (reg << 2),
+                                buf, sizeof buf, CTRL_TIMEOUT) < 0) {
+        goto failed;
+    }
+
+    return (long) (buf[0] | (buf[1] << 8) | (buf[2] << 16));
+
+failed:
+    return -1;
+}
+
 int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     uint16_t value = (val & 0xff) << 8 | reg;
     uint16_t index = (val >> 8) & 0xffff;

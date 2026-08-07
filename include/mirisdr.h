@@ -70,6 +70,8 @@ MIRISDR_API int mirisdr_reset_chip (mirisdr_dev_t *p);                  /* extra
 MIRISDR_API int mirisdr_reset_buffer (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, char *serial);
 MIRISDR_API int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour);
+MIRISDR_API int mirisdr_detect_hw_flavour (mirisdr_dev_t *p);  /* extra */
+MIRISDR_API mirisdr_hw_flavour_t mirisdr_get_hw_flavour (mirisdr_dev_t *p);  /* extra */
 
 /* sync */
 MIRISDR_API int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read);

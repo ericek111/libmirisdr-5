@@ -381,7 +381,11 @@ static int gain_sweep(int hw_flavour, uint32_t frequency,
     double worst_drop = 0.0;
     int g, n_gains, band_max;
 
-    mirisdr_set_hw_flavour(dev, hw_flavour ? MIRISDR_HW_SDRPLAY : MIRISDR_HW_DEFAULT);
+    /* negative means leave it alone: mirisdr_open() detects the board from its
+     * GPIO pulls, and overriding that with a fixed default is how the wrong
+     * band plan gets applied to a board that reports which one it wants. */
+    if (hw_flavour >= 0)
+        mirisdr_set_hw_flavour(dev, hw_flavour ? MIRISDR_HW_SDRPLAY : MIRISDR_HW_DEFAULT);
     mirisdr_set_sample_rate(dev, rate);
     mirisdr_set_center_freq(dev, frequency);
     mirisdr_set_sample_format(dev, "504_S8");
@@ -541,7 +545,8 @@ void usage(void)
         "\t[-w bandwidth in Hz (default: 8000000)]\n"
         "\t[-g gain in dB (default: 40)]\n"
         "\t[-d device index (default: 0)]\n"
-        "\t[-T device variant: 0 default, 1 SDRplay (default: 0)]\n"
+        "\t[-T device variant: 0 default, 1 SDRplay]\n"
+        "\t    omit to keep the board libmirisdr detected from its GPIO pulls\n"
         "\t[-v show the per-block loss messages while measuring]\n"
         "\n"
         "Gain linearity mode:\n"
@@ -580,7 +585,11 @@ static int measure(int hw_flavour, uint32_t rate, int mode, int fmt,
 
     run.dev = dev;
 
-    mirisdr_set_hw_flavour(dev, hw_flavour ? MIRISDR_HW_SDRPLAY : MIRISDR_HW_DEFAULT);
+    /* negative means leave it alone: mirisdr_open() detects the board from its
+     * GPIO pulls, and overriding that with a fixed default is how the wrong
+     * band plan gets applied to a board that reports which one it wants. */
+    if (hw_flavour >= 0)
+        mirisdr_set_hw_flavour(dev, hw_flavour ? MIRISDR_HW_SDRPLAY : MIRISDR_HW_DEFAULT);
     mirisdr_set_sample_rate(dev, rate);
     mirisdr_set_center_freq(dev, frequency);
     mirisdr_set_sample_format(dev, formats[fmt].name);
@@ -680,7 +689,7 @@ int main(int argc, char **argv)
     int n_fmts = 0;
     int modes = 3;
     int index = 0;
-    int hw_flavour = 0;
+    int hw_flavour = -1;   /* -1: keep what mirisdr_open() detected */
     int verbose = 0;
     double duration = DEFAULT_DURATION;
     double settle = DEFAULT_SETTLE;
@@ -826,6 +835,30 @@ int main(int argc, char **argv)
     if (mirisdr_open(&dev, index) < 0 || !dev) {
         no_device_hint(index);
         return 1;
+    }
+
+    /*
+     * Say which board this is. Two of them enumerate identically as
+     * 1df7:2500 and want different band-select words, and getting it wrong is
+     * silent -- the receiver is deaf rather than broken. mirisdr_open() works
+     * it out from the GPIO pulls, so print the answer rather than leave the
+     * reader to wonder which plan produced the numbers below.
+     */
+    {
+        /* -T is applied later, inside measure(), so what is in force here is
+         * whatever open() detected. Report both when they differ. */
+        int det = (mirisdr_get_hw_flavour(dev) == MIRISDR_HW_SDRPLAY);
+        int use = (hw_flavour >= 0) ? (hw_flavour != 0) : det;
+        const char *name[2] = { "generic Mirics (GPIO pulls low)",
+                                "SDRplay-style (GPIO pulls high)" };
+
+        if (hw_flavour < 0)
+            fprintf(stderr, "device %u: detected %s\n", index, name[det]);
+        else if (use == det)
+            fprintf(stderr, "device %u: detected %s, -T agrees\n", index, name[det]);
+        else
+            fprintf(stderr, "device %u: detected %s, but -T selects %s\n",
+                    index, name[det], name[use]);
     }
 
     if (gain_mode) {
