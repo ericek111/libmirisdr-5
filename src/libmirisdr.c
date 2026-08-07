@@ -302,6 +302,12 @@ failed:
     return -1;
 }
 
+/*
+ * Reset the USB link only.
+ *
+ * Note what this does not do: it leaves the MSi2500 itself exactly as it was.
+ * For the chip, see mirisdr_reset_chip().
+ */
 int mirisdr_reset (mirisdr_dev_t *p) {
     int r;
 
@@ -319,6 +325,35 @@ int mirisdr_reset (mirisdr_dev_t *p) {
 
 failed:
     return -1;
+}
+
+/*
+ * Restart the MSi2500 itself, with the CMD_RESET the firmware dispatches to
+ * restart its 8051.
+ *
+ * The command has been defined in reg.c since the beginning and never sent by
+ * anybody in this lineage, which is why one particular failure has always been
+ * described as needing a power cycle. Programming a sample rate much above
+ * 15.7 MS/s makes the part stop following the rate: it returns about
+ * 15.69 MS/s whatever is asked, and reopening, re-initialising and resetting
+ * the USB link all leave it there. This clears it immediately and repeatably.
+ *
+ * The part re-enumerates -- the USB device number changes -- so this is a soft
+ * replug, not a register poke. The handle is dead the moment it returns and
+ * the caller must close and reopen. That is also why it cannot go in
+ * mirisdr_reset() or the open path: the device would vanish mid-setup, and a
+ * libusb_reset_device() issued too soon afterwards interrupts the restart and
+ * leaves the fault in place.
+ */
+int mirisdr_reset_chip (mirisdr_dev_t *p) {
+    if (!p) return -1;
+    if (!p->dh) return -1;
+
+    /* the device disappears while this is in flight, so a failure here is not
+     * necessarily one; the caller finds out by reopening */
+    libusb_control_transfer(p->dh, 0x42, CMD_RESET, 0, 0, NULL, 0, CTRL_TIMEOUT);
+
+    return 0;
 }
 
 int mirisdr_reset_buffer (mirisdr_dev_t *p) {

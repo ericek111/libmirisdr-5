@@ -61,6 +61,12 @@ MIRISDR_API int mirisdr_open (mirisdr_dev_t **p, uint32_t index);
 MIRISDR_API int mirisdr_open_fd (mirisdr_dev_t **p, int fd);
 MIRISDR_API int mirisdr_close (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_reset (mirisdr_dev_t *p);                       /* extra */
+/*
+ * Restart the chip, not just the link. The part re-enumerates, so the handle is
+ * invalid on return and must be closed and reopened. This is what recovers the
+ * state a sample rate above ~15.7 MS/s leaves it in, which nothing else does.
+ */
+MIRISDR_API int mirisdr_reset_chip (mirisdr_dev_t *p);                  /* extra */
 MIRISDR_API int mirisdr_reset_buffer (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, char *serial);
 MIRISDR_API int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour);
