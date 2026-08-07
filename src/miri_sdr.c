@@ -81,7 +81,7 @@ void usage(void)
 	    "\t[-T device_type device variant (default: 0)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
-		"\t[-g gain (0-102, default: 0 for auto)]\n"
+		"\t[-g gain in dB (0 for auto; max is band dependent, 102 in VHF/Band III)]\n"
         "\t[-G individual gains separated by comma (mixer, lna, mixbuffer, baseband)]\n"
         "\t    mixer: 0, 1\n"
         "\t    LNA: 0, 1\n"

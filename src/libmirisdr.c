@@ -112,8 +112,8 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->bias = 0;
     dev->dc_mode = MIRISDR_DC_PERIODIC2;
     dev->dc_speedup = 0;
-    dev->dc_track = 0x1f;
-    dev->dc_period = 0x800;
+    dev->dc_track = MIRISDR_DC_OFFSET_TRACK_TIME_DEFAULT;
+    dev->dc_period = MIRISDR_DC_OFFSET_REFRESH_TIME_DEFAULT;
 
     dev->hw_flavour = MIRISDR_HW_DEFAULT;
 
