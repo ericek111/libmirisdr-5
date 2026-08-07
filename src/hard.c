@@ -157,14 +157,44 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	 * 		 where you can not switch back rate, as well as setting a lower frequency than 571,429 SPS
 	 * 		 because it will be less than N 2, which is not an acceptable condition.
 	 */
-	for (i = 4; i < 16; i += 2)
+	/*
+	 * The output divider runs to 16, not 14. Its field is three bits and the
+	 * encoding is (Rout / 2 - 1), so 16 is value 7 -- documented in the kernel
+	 * driver's table and perfectly legal. Both it and this lineage wrote the
+	 * bound as "< 16" and so never emitted it, which cost the lowest eighth of
+	 * the rate range for nothing: the floor is the VCO minimum over Rout * 12,
+	 * and going from 14 to 16 moves it from 1.202 to 1.052 MS/s.
+	 *
+	 * Take the largest divider the VCO ceiling allows, not the smallest that
+	 * clears some floor. Both satisfy the synthesiser, but they put the VCO at
+	 * opposite ends of its range and the choice is not free.
+	 *
+	 * Searching upward from 4 for the first divider clearing 202 MHz -- what
+	 * this lineage and the kernel driver both do -- parks the VCO between 202
+	 * and 235 MHz at the bottom of every divider band. That is fine only while
+	 * the part locks at 202. One here does not: its rate PLL tracks at 218 MHz
+	 * and rails at 215, so every band bottom fell below its floor and returned
+	 * a rate 4 to 6 percent high with nothing reported. Seven bands of the
+	 * range, not just the very bottom -- asking for 2.2 MS/s produced 2.288.
+	 *
+	 * Searching downward from 16 costs nothing and fixes it twice over. The VCO
+	 * lands as far above the floor as the field permits, and the rate
+	 * resolution improves, because the VCO's fixed 22.9 Hz step is divided by
+	 * Rout * 12 on the way out: 0.12 Hz at Rout 16 against 0.48 Hz at Rout 4.
+	 *
+	 * At the top of the range no divider keeps the VCO inside the ceiling -- 4
+	 * is the smallest there is -- so the loop falls out at 4 and the VCO runs
+	 * over, which is what the old code did there too and why the last megasample
+	 * is marginal.
+	 */
+	for (i = 16; i > 4; i -= 2)
 	{
-		vco = (uint64_t) p->rate * i * 12;
-
-		if (vco >= 202000000UL) {
+		if ((uint64_t) p->rate * i * 12 <= MIRISDR_RATE_VCO_MAX) {
 			break;
 		}
 	}
+
+	vco = (uint64_t) p->rate * i * 12;
 
 	/* z předchozího výpočtu je N minimálně 4 */
 	/* from the previous calculation N is at least 4 */
