@@ -343,6 +343,13 @@ int main(int argc, char **argv)
 		break;
 	}
 
+	/* Sync reading is bulk only, and the transfer mode defaults to
+	   isochronous, so -S on its own would always fail. */
+	if (sync_mode && transfer != 2) {
+		fprintf(stderr, "Sync output requires bulk transfers, selecting -e 2.\n");
+		transfer = 2;
+	}
+
 	/* Set USB transfer type */
 	switch (transfer) {
 	case 1:

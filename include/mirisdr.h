@@ -91,6 +91,15 @@ MIRISDR_API const char *mirisdr_get_sample_format (mirisdr_dev_t *p);   /* extra
 MIRISDR_API int mirisdr_streaming_start (mirisdr_dev_t *p);             /* extra */
 MIRISDR_API int mirisdr_streaming_stop (mirisdr_dev_t *p);              /* extra */
 
+/*
+ * Samples dropped between USB blocks, counted from the block sequence counter.
+ * Free running; mirisdr_reset_lost() zeroes both to bound a measurement.
+ */
+MIRISDR_API uint32_t mirisdr_get_lost_samples (mirisdr_dev_t *p);       /* extra */
+MIRISDR_API uint32_t mirisdr_get_lost_events (mirisdr_dev_t *p);        /* extra */
+MIRISDR_API uint32_t mirisdr_get_desync_events (mirisdr_dev_t *p);      /* extra */
+MIRISDR_API int mirisdr_reset_lost (mirisdr_dev_t *p);                  /* extra */
+
 /* frequency */
 MIRISDR_API int mirisdr_set_center_freq (mirisdr_dev_t *p, uint32_t freq);
 MIRISDR_API uint32_t mirisdr_get_center_freq (mirisdr_dev_t *p);

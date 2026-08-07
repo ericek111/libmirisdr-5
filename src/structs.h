@@ -104,6 +104,14 @@ struct mirisdr_dev {
     int                 samples_size;
     int                 sync_loss_cnt;
 
+    /* sync: set once mirisdr_read_sync() has the bulk endpoint streaming */
+    int                 sync_started;
+
+    /* dropped sample accounting, from the block sequence counter */
+    uint32_t            lost_samples;
+    uint32_t            lost_events;
+    uint32_t            desync_events;  /* subset with no usable sample count */
+
     /* dc offset calibration */
     enum {
         MIRISDR_DC_STATIC = 0,
