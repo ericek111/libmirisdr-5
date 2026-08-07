@@ -107,6 +107,13 @@ struct mirisdr_dev {
     /* sync: set once mirisdr_read_sync() has the bulk endpoint streaming */
     int                 sync_started;
 
+    /* mixer harmonic used for tuning; 1 is an ordinary fundamental tune */
+    unsigned int        harmonic;
+    int                 harmonic_auto;  /* let set_center_freq choose it */
+
+    /* deliver a deliberately mirrored spectrum; see reg 0x07 bit 9 */
+    int                 invert_spectrum;
+
     /* dropped sample accounting, from the block sequence counter */
     uint32_t            lost_samples;
     uint32_t            lost_events;

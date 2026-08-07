@@ -19,6 +19,45 @@
 
 /* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */
+/*
+ * Register 0x07: the packet format, plus bit 9.
+ *
+ * Bit 9 exchanges I and Q, mirroring the spectrum. It is not in any datasheet
+ * -- the MSi2500's does not document the register map at all -- and was found
+ * by toggling the register's undocumented bits against a signal with a known
+ * asymmetry. Measured at the upper edge of a DVB-T mux, where the energy lies
+ * below the tuned frequency, setting it turns +16.3 dB of below-minus-above
+ * into -16.4 dB, and at the mux's lower edge -14.4 dB becomes +14.2 dB. The
+ * asymmetry is negated rather than lost, which is what distinguishes a swap
+ * from a broken format, and it behaves the same in all four packet formats.
+ *
+ * Anything that rewrites this register has to preserve the bit, which is why
+ * the value is composed here rather than written as four literals.
+ */
+static uint32_t mirisdr_reg07 (mirisdr_dev_t *p)
+{
+	uint32_t v;
+
+	switch (p->format)
+	{
+	case MIRISDR_FORMAT_252_S16: v = 0x000094; break;
+	case MIRISDR_FORMAT_336_S16: v = 0x000085; break;
+	case MIRISDR_FORMAT_384_S16: v = 0x0000a5; break;
+	default:                     v = 0x000c94; break;   /* both 504 formats */
+	}
+
+	/*
+	 * An odd harmonic whose rotation lands on 270 degrees mirrors the
+	 * spectrum by itself; setting the bit as well cancels it, so a harmonic
+	 * tune comes out the right way round at no cost per sample. The two
+	 * combine, so asking for inversion on such a harmonic gives it back.
+	 */
+	if (((p->harmonic & 3) == 3) ^ (p->invert_spectrum != 0))
+		v |= MIRISDR_SPECTRUM_INVERT;
+
+	return v;
+}
+
 int mirisdr_set_hard(mirisdr_dev_t *p)
 {
 	int streaming = 0;
@@ -66,39 +105,37 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 
 	/* typ forámtu a šířka pásma */
 	/* format type and bandwidth */
+	mirisdr_write_reg(p, 0x07, mirisdr_reg07(p));
+
 	switch (p->format)
 	{
 	case MIRISDR_FORMAT_252_S16:
-		/* maximum rate 6.048 Msps | 24.576 MB/s | 196.608 Mbit/s  */
+		/* maximum rate 6.048 Msps over the isochronous slot */
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 252\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000094);
 		p->addr = 252 + 2;
 		break;
 	case MIRISDR_FORMAT_336_S16:
-		/* maximum rate 8.064 Msps | 24.576 MB/s | 196.608 Mbit/s */
+		/* maximum rate 8.064 Msps over the isochronous slot */
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 336\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000085);
 		p->addr = 336 + 2;
 		break;
 	case MIRISDR_FORMAT_384_S16:
-		/* maximum rate 9.216 Msps | 24.576 MB/s | 196.608 Mbit/s */
+		/* maximum rate 9.216 Msps over the isochronous slot */
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 384\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x0000a5);
 		p->addr = 384 + 2;
 		break;
 	case MIRISDR_FORMAT_504_S16:
 	case MIRISDR_FORMAT_504_S8:
-		/* maximum rate 12.096 Msps | 24.576 MB/s | 196.608 Mbit/s */
+		/* maximum rate 12.096 Msps over the isochronous slot */
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 504\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000c94);
 		p->addr = 504 + 2;
 		break;
 	}

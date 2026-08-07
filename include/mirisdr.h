@@ -112,6 +112,28 @@ MIRISDR_API uint32_t mirisdr_get_bandwidth (mirisdr_dev_t *p);          /* extra
 MIRISDR_API int mirisdr_set_offset_tuning (mirisdr_dev_t *p, int on);   /* extra */
 MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra */
 
+/*
+ * Harmonic tuning. mirisdr_set_center_freq() reaches above the ~2115 MHz the
+ * VCO allows at the fundamental by putting the LO on freq/n for some odd n and
+ * receiving on the mixer's n-th harmonic. This happens by itself, only when the
+ * fundamental will not lock, so ordinary tuning is unaffected.
+ *
+ * Set a specific odd n to force one, or 0 to go back to choosing automatically.
+ * Note the band plan follows the LO rather than the requested frequency, so a
+ * harmonic tune selects the RF input path around freq/n, and the mixer still
+ * answers at its other odd multiples: an external bandpass is required.
+ */
+MIRISDR_API int mirisdr_set_harmonic (mirisdr_dev_t *p, unsigned int n);/* extra */
+MIRISDR_API unsigned int mirisdr_get_harmonic (mirisdr_dev_t *p);       /* extra */
+/*
+ * Spectrum sense. The MSi2500 can exchange I and Q in hardware, so a harmonic
+ * that would mirror the spectrum (n mod 4 == 3) is corrected automatically and
+ * samples always arrive the right way round. Set this to ask for the mirror
+ * image deliberately.
+ */
+MIRISDR_API int mirisdr_set_spectrum_inversion (mirisdr_dev_t *p, int on);/* extra */
+MIRISDR_API int mirisdr_get_spectrum_inverted (mirisdr_dev_t *p);       /* extra */
+
 /* not implemented yet */
 MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);
 MIRISDR_API int mirisdr_set_direct_sampling (mirisdr_dev_t *p, int on);

@@ -78,6 +78,11 @@ void usage(void)
         "\t  14000000: 14MHz\n"
 		"\t[-s samplerate (default: 2048000 Hz)]\n"
 		"\t[-d device_index (default: 0)]\n"
+	    "\t[-H force the LO harmonic, odd only; 0 or omitted = automatic]\n"
+        "\t    frequencies above ~2115 MHz are reached on a harmonic anyway,\n"
+        "\t    chosen automatically; this only overrides that choice\n"
+        "\t    the band plan follows the LO, so a harmonic tune selects the\n"
+        "\t    RF input path around freq/n and needs an external bandpass\n"
 	    "\t[-T device_type device variant (default: 0)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
@@ -138,6 +143,7 @@ int main(int argc, char **argv)
     int gain_mixer = 0, gain_lna = 0, gain_mb = 0, gain_bb = 0;
     int gain_one = 1;
 	int sync_mode = 0;
+	unsigned int harmonic = 1;   /* 1 leaves the automatic choice alone */
 	FILE *file;
 	uint8_t *buffer;
 	uint32_t format = 0;
@@ -158,7 +164,7 @@ int main(int argc, char **argv)
 	int intval;
 
 #if !defined (_WIN32) || defined(__MINGW32__)
-	while ((opt = getopt(argc, argv, "b:d:T:e:f:g:G:i:m:s:w:S::")) != -1) {
+	while ((opt = getopt(argc, argv, "b:d:T:e:f:g:G:H:i:m:s:w:S::")) != -1) {
 		switch (opt) {
 		case 'b':
 			out_block_size = (uint32_t)atof(optarg);
@@ -229,6 +235,9 @@ int main(int argc, char **argv)
 			break;
 		case 'w':
 			bw = atoi(optarg);
+			break;
+		case 'H':
+			harmonic = (unsigned int) atoi(optarg);
 			break;
 		case 'S':
 			sync_mode = 1;
@@ -317,12 +326,22 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);
 	}
 
+	/* an explicit -H overrides the automatic choice; 0 restores it */
+	if (harmonic != 1 && mirisdr_set_harmonic(dev, harmonic) < 0)
+		exit(1);
+
 	/* Set the frequency */
 	r = mirisdr_set_center_freq(dev, frequency);
 	if (r < 0)
 		fprintf(stderr, "WARNING: Failed to set center freq.\n");
-	else
-		fprintf(stderr, "Tuned to %u Hz.\n", frequency);
+	else {
+		unsigned int n = mirisdr_get_harmonic(dev);
+		if (n > 1)
+			fprintf(stderr, "Tuned to %u Hz on harmonic %u, LO at %u Hz.\n",
+				frequency, n, frequency / n);
+		else
+			fprintf(stderr, "Tuned to %u Hz.\n", frequency);
+	}
 
 	/* Set sample format */
 	switch (format) {

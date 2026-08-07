@@ -115,6 +115,9 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->dc_track = MIRISDR_DC_OFFSET_TRACK_TIME_DEFAULT;
     dev->dc_period = MIRISDR_DC_OFFSET_REFRESH_TIME_DEFAULT;
     dev->sync_started = 0;
+    dev->harmonic = 1;
+    dev->harmonic_auto = 1;
+    dev->invert_spectrum = 0;
     dev->lost_samples = 0;
     dev->lost_events = 0;
     dev->desync_events = 0;
