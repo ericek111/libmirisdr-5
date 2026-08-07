@@ -66,3 +66,40 @@ typedef struct
     int lo_div;
     uint32_t band_select_word;
 } hw_switch_freq_plan_t;
+
+/*
+ * Synthesiser reference, and the quantities the datasheet derives from it
+ * (MSi001 R3v2.0 section 5.5 and table 23).
+ *
+ * F_LO = (4 * F_REF1 / LO_DIV) * [INT + (FRAC * 2^12 + AFC) / (THRESH * 2^12)]
+ *
+ * so the 4 * F_REF1 below is the constant the synthesiser arithmetic is built
+ * on. F_IF1, the first IF the AM path is up-converted to, is specified as an
+ * integer multiple of F_REF1: the table gives 122.88 MHz for a 24.576 MHz
+ * reference and 130 MHz for 26 MHz, both five times it, and five times this
+ * board's 24 MHz is the 120 MHz that has been hardcoded here all along.
+ *
+ * Table 23 has no 24.000 MHz row -- it predates this hardware -- and the
+ * crystal field is sent code 2, which the table calls 24.576. That is not a
+ * mismatch. Read the table as ratios rather than frequencies and the field
+ * selects a reference divider and an F_IF1 multiplier, nothing absolute:
+ *
+ *      code   crystal      F_REF1     F_IF1
+ *      000    19.2 MHz     /1         x7
+ *      001    22           /1         x6
+ *      010    24.576       /1         x5
+ *      011    26           /1         x5
+ *      100    38.4         /2         x7
+ *
+ * Code 2 therefore means divide by one and multiply by five, which on this
+ * board's 24.000 MHz crystal gives F_REF1 = 24.000 and F_IF1 = 120 MHz -- the
+ * two constants below. The label in the table is only the crystal that row was
+ * written for; the ratios are what the part is being told, and for a 24 MHz
+ * part they are the right ones.
+ *
+ * Measurement agrees: tuning computed from 24.000 lands where it is asked to,
+ * where 24.576 would be 2.4% out, which at 2.4 GHz is 60 MHz.
+ */
+#define MIRISDR_FREF1_HZ                24000000UL
+#define MIRISDR_FLO_MULT                (4UL * MIRISDR_FREF1_HZ)    /* 96 MHz */
+#define MIRISDR_FIF1_HZ                 (5UL * MIRISDR_FREF1_HZ)    /* 120 MHz */

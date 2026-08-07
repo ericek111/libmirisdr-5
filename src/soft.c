@@ -27,6 +27,30 @@
 //GPIO0 - DAB notch
 //GPIO2 - Broadcast FM notch
 
+/*
+ * The last column is the word written to MSi2500 register 0x08. It is not an
+ * opaque band pattern; it decomposes as:
+ *
+ *      bits 15:12   GPIO output enable, one bit per pin (GPIO_0 .. GPIO_3)
+ *      bits 11:8    GPIO output data,   one bit per pin (GPIO_0 .. GPIO_3)
+ *      bit  7       lock LED
+ *
+ * The MSi2500 has exactly four GPIO pins, so there is no GPIO_4..GPIO_7; the
+ * upper nibble is direction, not more data. Every word in both plans below uses
+ * enable nibble 0xf, i.e. all four pins driven as outputs, which is only safe on
+ * a board that puts nothing else on them. The MSi2500 datasheet's reference
+ * application uses GPIO_0 for EEPROM read-data, GPIO_1 for the EEPROM chip
+ * select, GPIO_2 as a memory-size strap and GPIO_3 as an IR receiver input, so a
+ * board with serial memory fitted needs GPIO_0 left as an input -- enable nibble
+ * 0xe -- or it will fight the EEPROM driving that line. The SDRplay service does
+ * exactly that for every hardware version except the RSP1, which has no EEPROM.
+ *
+ * Known data-bit assignments on these boards: GPIO_0 is a DSB/DAB notch, GPIO_2
+ * a broadcast FM notch, GPIO_3 the bias-T.
+ *
+ * Trailing 0x80 in every word is the lock LED; Osmocom's driver clears it on
+ * shutdown by writing the same word with bit 7 low.
+ */
 hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
         {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80},
@@ -69,7 +93,24 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 {
     uint32_t reg0 = 0, reg2 = 2, reg5 = 5, reg3 = 3, regd = 0x0d;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c;
+    uint64_t lo_freq;
     int i;
+
+    /*
+     * Everything below tunes the local oscillator, and on a harmonic that is
+     * not the frequency being received. A switching mixer answers at odd
+     * multiples of its LO, so putting the LO at f/n receives at f with the
+     * n-th harmonic doing the downconversion; n == 1 is the ordinary case and
+     * divides by one.
+     *
+     * The division has to happen here, before anything else, because the band
+     * plan and the synthesiser both describe the oscillator rather than the
+     * signal. That has a consequence worth knowing: the plan row that supplies
+     * the right divider also selects an RF input path, and for a harmonic tune
+     * that path is the one around f/n, not the one around f. The signal has to
+     * reach the mixer through a front end chosen for a fifth of its frequency.
+     */
+    lo_freq = p->freq / (p->harmonic ? p->harmonic : 1);
 
     /*** registr0 - parametry pásma ***/
     /*** registr0 - parameters zone ***/
@@ -79,7 +120,7 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 
     i = 0;
 
-    while (p->freq >= 1000000 * hw_switch_freq_plan[(int) p->hw_flavour][i].low_cut)
+    while (lo_freq >= 1000000 * hw_switch_freq_plan[(int) p->hw_flavour][i].low_cut)
     {
         if (hw_switch_freq_plan[(int) p->hw_flavour][i].mode < 0) {
             break;
@@ -109,7 +150,8 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 
         if (switch_plan.upconvert_mixer_on)
         {
-            offset += 120000000UL;
+            /* the AM path is up-converted to the first IF, 5 * F_REF1 */
+            offset += MIRISDR_FIF1_HZ;
         }
 
         lo_div = 16;
@@ -172,6 +214,16 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 //        reg0 |= MIRISDR_MODE_BL << 4;
 //        lo_div = 2;
 //    }
+
+    /*
+     * Datasheet 5.5: F_LO = F_C + F_IF, and F_C + F_IF + F_IF1 for the AM
+     * modes. The IF term was missing altogether -- selecting a low IF moved
+     * the channel filter but left the oscillator where it was, so the wanted
+     * signal sat F_IF away from where the filter was looking. Only the zero-IF
+     * path was unaffected, which is the one nearly everything uses, so it went
+     * unnoticed.
+     */
+    offset += mirisdr_get_if_freq(p);
 
     /* RF syntetizer je vždy aktivní */
     /* RF synthesizer is always active */
@@ -258,19 +310,19 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 
     /* vco frekvence, je lepší použít 64bitový rozsah */
     /* VCO frequency is better to use a 64-bit range */
-    fvco = (p->freq + offset) * lo_div;
+    fvco = (lo_freq + offset) * lo_div;
 
     /* posun po hlavní frekvenci */
     /* shift the main frequency */
-    n = fvco / 96000000UL;
+    n = fvco / MIRISDR_FLO_MULT;
 
     /* hlavní registr, hrubé ladění */
     /* major registry, coarse tuning */
-    thresh = 96000000UL / lo_div;
+    thresh = MIRISDR_FLO_MULT / lo_div;
 
     /* vedlejší registr, jemné ladění */
     /* side register, fine tuning */
-    frac = (fvco % 96000000UL) / lo_div;
+    frac = (fvco % MIRISDR_FLO_MULT) / lo_div;
 
     /* najdeme největší společný dělitel pro thresh a frac */
     /* We find the greatest common divisor for thresh and frac */
@@ -292,11 +344,11 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     thresh = (thresh + (a / 2)) / a;
     frac = (frac + (a / 2)) / a;
 
-    rfvco=(96000000UL * (n * thresh * 4096UL + (frac * 4096UL))) / (thresh * 4096UL * lo_div);
-    if(p->freq + offset < rfvco)
+    rfvco=(MIRISDR_FLO_MULT * (n * thresh * 4096UL + (frac * 4096UL))) / (thresh * 4096UL * lo_div);
+    if(lo_freq + offset < rfvco)
         frac --;
-    rfvco=(96000000UL * (n * thresh * 4096UL + (frac * 4096UL + afc))) / (thresh * 4096UL * lo_div);
-    afc = ((p->freq + offset - rfvco) * thresh * 4096UL * lo_div) /96000000UL;
+    rfvco=(MIRISDR_FLO_MULT * (n * thresh * 4096UL + (frac * 4096UL + afc))) / (thresh * 4096UL * lo_div);
+    afc = ((lo_freq + offset - rfvco) * thresh * 4096UL * lo_div) / MIRISDR_FLO_MULT;
 
     reg3 |= (afc & 4095) << 4;
     reg5 |= (0xFFF & thresh) << 4;
@@ -352,7 +404,7 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
     fprintf( stderr,"mirisdr sel:%d %x ",i,switch_plan.band_select_word);
     fprintf( stderr,"freq: %.3f MHz (offset: %.3f MHz), n: %lu, fraction: %lu/%lu\n",
-            ((double) n + (double) frac / (double) thresh) * 96.0 / (double) lo_div,
+            ((double) n + (double) frac / (double) thresh) * (MIRISDR_FLO_MULT / 1.0e6) / (double) lo_div,
             (double) offset / 1.0e6, (long unsigned)n,
             (long unsigned)frac, (long unsigned)thresh);
     char* if_str = "undefined";
@@ -408,17 +460,187 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     return 0;
 }
 
+/*
+ * Reaching above the fundamental limit.
+ *
+ * The VCO locks over roughly 1560 - 4230 MHz and the top band divides it by 2,
+ * so the highest ordinary tune is about 2115 MHz. Above that the synthesiser
+ * simply cannot get there.
+ *
+ * A switching mixer is a square wave, so its Fourier series has odd terms only
+ * and the mixer answers at odd multiples of its own LO as well as at the LO
+ * itself. Put the oscillator at f/n and the n-th harmonic downconverts f.
+ * Everything downstream is unchanged, because from the synthesiser's point of
+ * view a harmonic tune is an ordinary one at a lower frequency.
+ *
+ * This is chosen automatically. mirisdr_set_center_freq() takes the frequency
+ * you want and the library finds a way to reach it, falling back to a harmonic
+ * only when the fundamental will not lock -- so ordinary tuning is untouched
+ * and nothing below 2115 MHz behaves differently.
+ *
+ * Two costs are unavoidable and neither is compensated here. The plan row that
+ * supplies the divider also selects an RF input path, and for a harmonic tune
+ * that path is the one around f/n, so the signal has to arrive through a front
+ * end chosen for a fraction of its frequency. And the mixer still answers at
+ * its fundamental and at every other odd multiple, so an external bandpass at
+ * the wanted frequency is required rather than optional.
+ */
+
+/* the divider the band plan would use for this LO; 0 if it is off the plan */
+static uint64_t mirisdr_plan_lo_div(mirisdr_dev_t *p, uint64_t lo, uint64_t *offset)
+{
+    const hw_switch_freq_plan_t *plan = hw_switch_freq_plan[(int) p->hw_flavour];
+    int i = 0;
+
+    *offset = 0;
+
+    if (lo < 1000000ULL * plan[0].low_cut)
+        return 0;
+
+    while (lo >= 1000000ULL * plan[i].low_cut) {
+        if (plan[i].mode < 0)
+            return 0;                   /* past the plan's end marker */
+        i++;
+    }
+
+    if (plan[i - 1].mode == MIRISDR_MODE_AM) {
+        /* the AM rows fix the divider themselves and shift by the upconvert */
+        if (plan[i - 1].upconvert_mixer_on)
+            *offset = MIRISDR_FIF1_HZ;
+        return 16;
+    }
+
+    return (uint64_t) plan[i - 1].lo_div;
+}
+
+/* can the synthesiser actually produce this LO? */
+static int mirisdr_lo_lockable(mirisdr_dev_t *p, uint64_t lo)
+{
+    uint64_t offset, div = mirisdr_plan_lo_div(p, lo, &offset);
+    uint64_t vco;
+
+    if (!div)
+        return 0;
+
+    vco = (lo + offset) * div;
+
+    return vco >= MIRISDR_VCO_MIN && vco <= MIRISDR_VCO_MAX;
+}
+
+/*
+ * The lowest odd harmonic that can reach this frequency, or 1 if none can, so
+ * an impossible request still fails as an ordinary tune rather than silently
+ * landing somewhere unrelated.
+ *
+ * Lowest rather than the conventional 5th: harmonic amplitude falls with n, so
+ * the 3rd costs the least conversion loss, and the reason the 5th is usually
+ * preferred -- it alone preserves sideband sense -- no longer applies now that
+ * the bridge corrects the sideband in hardware.
+ */
+static unsigned int mirisdr_pick_harmonic(mirisdr_dev_t *p, uint64_t freq)
+{
+    unsigned int n;
+
+    for (n = 1; n <= MIRISDR_HARMONIC_MAX; n += 2)
+        if (mirisdr_lo_lockable(p, freq / n))
+            return n;
+
+    return 1;
+}
+
+/*
+ * Force a harmonic, or pass 0 to go back to choosing automatically.
+ *
+ * Only odd n is accepted: a square-wave mixer has no even-harmonic response to
+ * speak of, so offering one would be offering a tune that cannot work.
+ */
+int mirisdr_set_harmonic(mirisdr_dev_t *p, unsigned int n)
+{
+    if (!p)
+        return -1;
+
+    if (n > 1 && (n & 1) == 0) {
+        fprintf(stderr, "mirisdr_set_harmonic: %u is not usable, a switching"
+                        " mixer responds on odd harmonics only\n", n);
+        return -1;
+    }
+
+    p->harmonic_auto = (n == 0);
+    if (n)
+        p->harmonic = n;
+
+    /* reg 0x07 carries the inversion that cancels this harmonic's own */
+    if (mirisdr_set_hard(p) < 0)
+        return -1;
+
+    return mirisdr_set_soft(p);
+}
+
+/* the harmonic actually in use, resolved */
+unsigned int mirisdr_get_harmonic(mirisdr_dev_t *p)
+{
+    return p ? p->harmonic : 0;
+}
+
 int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)
 {
+    int r;
+
+    if (!p)
+        return -1;
+
     p->freq = freq;
-    int r = mirisdr_set_soft(p);
+
+    if (p->harmonic_auto) {
+        unsigned int n = mirisdr_pick_harmonic(p, freq);
+
+        if (n != p->harmonic) {
+            p->harmonic = n;
+            /* the sideband correction lives in reg 0x07 and follows n */
+            if (mirisdr_set_hard(p) < 0)
+                return -1;
+        }
+    }
+
+    r = mirisdr_set_soft(p);
     r += mirisdr_set_gain(p); // restore gain
+
     return r;
 }
 
 uint32_t mirisdr_get_center_freq(mirisdr_dev_t *p)
 {
     return p->freq;
+}
+
+/*
+ * Deliver a deliberately mirrored spectrum.
+ *
+ * The MSi2500 can exchange I and Q itself -- register 0x07 bit 9, see
+ * mirisdr_reg07() -- so this costs nothing per sample.
+ *
+ * It also means a harmonic tune no longer hands back a mirrored spectrum. Each
+ * harmonic rotates the quadrature LO by n * 90 degrees and the sideband inverts
+ * whenever that lands on 270, i.e. n mod 4 == 3; the library now sets the bit
+ * on exactly those harmonics to cancel it. So the spectrum arrives the right
+ * way round whatever n is, and this call is what it says it is: an explicit
+ * request for the mirror image, which on such a harmonic is granted by leaving
+ * the hardware bit clear.
+ */
+int mirisdr_set_spectrum_inversion(mirisdr_dev_t *p, int on)
+{
+    if (!p)
+        return -1;
+
+    p->invert_spectrum = on ? 1 : 0;
+
+    return mirisdr_set_hard(p);
+}
+
+/* whether the samples being delivered are mirrored, after any correction */
+int mirisdr_get_spectrum_inverted(mirisdr_dev_t *p)
+{
+    return p ? (p->invert_spectrum != 0) : 0;
 }
 
 int mirisdr_set_if_freq(mirisdr_dev_t *p, uint32_t freq)

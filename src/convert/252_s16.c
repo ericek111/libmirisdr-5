@@ -25,8 +25,7 @@ static int mirisdr_samples_convert_252_s16 (mirisdr_dev_t *p, unsigned char* buf
 
         /* potenciálně ztracená data - potentially lost data */
         if ((i == 0) && (addr != p->addr)) {
-            fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", addr - p->addr, cnt, p->addr, addr);
-            p->sync_loss_cnt++;
+            mirisdr_note_lost(p, addr, cnt);
         }
 
         /* přeskočíme hlavičku 16 bitů, 252 I+Q párů - skip 16 bits of header, do 252 I+Q pairs */

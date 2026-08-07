@@ -39,3 +39,42 @@ failed:
     return -1;
 }
 
+/*
+ * Dropped sample accounting.
+ *
+ * Every 1024 byte block carries a 32-bit sample counter in its header; the
+ * format converters compare it against the expected value and, on a mismatch,
+ * add the gap here. Until now the only report of a gap was a line on stderr,
+ * which an application cannot act on and which by itself costs enough at high
+ * loss rates to perturb what it is measuring.
+ *
+ * The counters are free running. Reset them to bound a measurement.
+ */
+uint32_t mirisdr_get_lost_samples (mirisdr_dev_t *p) {
+    return p ? p->lost_samples : 0;
+}
+
+uint32_t mirisdr_get_lost_events (mirisdr_dev_t *p) {
+    return p ? p->lost_events : 0;
+}
+
+/*
+ * The subset of events where the block framing was lost rather than a clean gap
+ * seen, so no sample count could be attributed. While this is non-zero the
+ * lost-sample total is a floor, not a total: whatever went missing during the
+ * desynchronised stretch is not in it.
+ */
+uint32_t mirisdr_get_desync_events (mirisdr_dev_t *p) {
+    return p ? p->desync_events : 0;
+}
+
+int mirisdr_reset_lost (mirisdr_dev_t *p) {
+    if (!p) return -1;
+
+    p->lost_samples = 0;
+    p->lost_events = 0;
+    p->desync_events = 0;
+
+    return 0;
+}
+

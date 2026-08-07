@@ -112,10 +112,28 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->bias = 0;
     dev->dc_mode = MIRISDR_DC_PERIODIC2;
     dev->dc_speedup = 0;
-    dev->dc_track = 0x1f;
-    dev->dc_period = 0x800;
+    dev->dc_track = MIRISDR_DC_OFFSET_TRACK_TIME_DEFAULT;
+    dev->dc_period = MIRISDR_DC_OFFSET_REFRESH_TIME_DEFAULT;
+    dev->sync_started = 0;
+    dev->harmonic = 1;
+    dev->harmonic_auto = 1;
+    dev->invert_spectrum = 0;
+    dev->lost_samples = 0;
+    dev->lost_events = 0;
+    dev->desync_events = 0;
 
-    dev->hw_flavour = MIRISDR_HW_DEFAULT;
+    /*
+     * Ask the hardware which plan it wants before falling back to a guess. The
+     * caller can still override with mirisdr_set_hw_flavour(); this only picks
+     * a better default than a fixed one, and leaves the fixed one in place when
+     * the probe cannot tell.
+     */
+    {
+        int detected = mirisdr_detect_hw_flavour(dev);
+
+        dev->hw_flavour = (detected < 0) ? MIRISDR_HW_DEFAULT
+                                         : (mirisdr_hw_flavour_t) detected;
+    }
 
     /* ISOC is more stable but works only on Unix systems */
 #if !defined (_WIN32) || defined(__MINGW32__)
@@ -251,6 +269,10 @@ int mirisdr_close (mirisdr_dev_t *p) {
     /* ukončení async čtení okamžitě */
     mirisdr_cancel_async_now(p);
 
+    /* the sync path starts the stream itself, so it has to stop it itself too;
+     * a device left streaming into a closed handle is what wedges the receiver */
+    mirisdr_stop_sync(p);
+
     // similar to rtl-sdr
 #if defined(_WIN32) && !defined(__MINGW32__)
             Sleep(1);
@@ -291,6 +313,12 @@ failed:
     return -1;
 }
 
+/*
+ * Reset the USB link only.
+ *
+ * Note what this does not do: it leaves the MSi2500 itself exactly as it was.
+ * For the chip, see mirisdr_reset_chip().
+ */
 int mirisdr_reset (mirisdr_dev_t *p) {
     int r;
 
@@ -308,6 +336,35 @@ int mirisdr_reset (mirisdr_dev_t *p) {
 
 failed:
     return -1;
+}
+
+/*
+ * Restart the MSi2500 itself, with the CMD_RESET the firmware dispatches to
+ * restart its 8051.
+ *
+ * The command has been defined in reg.c since the beginning and never sent by
+ * anybody in this lineage, which is why one particular failure has always been
+ * described as needing a power cycle. Programming a sample rate much above
+ * 15.7 MS/s makes the part stop following the rate: it returns about
+ * 15.69 MS/s whatever is asked, and reopening, re-initialising and resetting
+ * the USB link all leave it there. This clears it immediately and repeatably.
+ *
+ * The part re-enumerates -- the USB device number changes -- so this is a soft
+ * replug, not a register poke. The handle is dead the moment it returns and
+ * the caller must close and reopen. That is also why it cannot go in
+ * mirisdr_reset() or the open path: the device would vanish mid-setup, and a
+ * libusb_reset_device() issued too soon afterwards interrupts the restart and
+ * leaves the fault in place.
+ */
+int mirisdr_reset_chip (mirisdr_dev_t *p) {
+    if (!p) return -1;
+    if (!p->dh) return -1;
+
+    /* the device disappears while this is in flight, so a failure here is not
+     * necessarily one; the caller finds out by reopening */
+    libusb_control_transfer(p->dh, 0x42, CMD_RESET, 0, 0, NULL, 0, CTRL_TIMEOUT);
+
+    return 0;
 }
 
 int mirisdr_reset_buffer (mirisdr_dev_t *p) {
@@ -333,6 +390,93 @@ int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, 
     memset(serial, 0, 256);
 
     return 0;
+}
+
+/*
+ * Work out which board this is, by asking what it pulls its GPIO lines to.
+ *
+ * Two boards enumerate identically as 1df7:2500 and need different band-select
+ * words: one is driven by the SDRplay plan, the other only by the default one,
+ * and choosing wrong leaves the receiver deaf with nothing reported anywhere.
+ * The USB descriptors are no help -- both answer bcdDevice 2.00, 400 mA, four
+ * alternate settings and no string descriptors at all.
+ *
+ * The boards differ below that. Register 0x08 is write-only, but its bits 15:12
+ * are per-pin output enables and register 0x06 reads the pins back, bits 2:0
+ * being GPIO_2, GPIO_1 and GPIO_0. Release a pin and it settles to whatever the
+ * board pulls it to, which is a property of the board and not of the chip.
+ * Measured, the two are a clean inversion: all three pulled up on one, all three
+ * pulled down on the other.
+ *
+ * Two safeguards are load bearing.
+ *
+ * GPIO_3 is never released. On RSP1-style hardware it is the bias tee and it
+ * floats high, so releasing it switches DC onto the antenna port -- which is
+ * how a board was taken off the USB bus during this work. GPIO_0 to GPIO_2
+ * discriminate on their own, so there is no reason to touch it. Note this also
+ * makes Osmocom's init word 0x006680 worth avoiding here: its enable nibble of
+ * 0x6 releases GPIO_3 along with GPIO_0.
+ *
+ * And the answer is only accepted if it does not follow the data latch. The
+ * pins are read once with the latch written low and once with it written high;
+ * if the two disagree the readback is reporting the latch rather than the pin,
+ * and this returns -1 rather than guess. The caller keeps whatever it had.
+ */
+int mirisdr_detect_hw_flavour (mirisdr_dev_t *p) {
+    long lo, hi;
+
+    if (!p) goto failed;
+    if (!p->dh) goto failed;
+
+    /* enable nibble 8: GPIO_3 driven low, GPIO_0..2 released */
+    mirisdr_write_reg(p, 0x08, 0x008080);
+    lo = mirisdr_read_reg(p, 0x06);
+    mirisdr_write_reg(p, 0x08, 0x008780);
+    hi = mirisdr_read_reg(p, 0x06);
+
+    /* leave the pins driven again; the caller's band word follows shortly */
+    mirisdr_write_reg(p, 0x08, 0x00f380);
+
+    if ((lo < 0) || (hi < 0)) goto failed;
+    if ((lo & 0x07) != (hi & 0x07)) goto failed;      /* it is the latch, not the pin */
+
+    switch (lo & 0x07) {
+    case 0x07: return MIRISDR_HW_SDRPLAY;             /* all pulled up   */
+    case 0x00: return MIRISDR_HW_DEFAULT;             /* all pulled down */
+    default:
+        /*
+         * A mixed pattern is a board neither of the two measured ones, so fall
+         * back to the single line that carries the answer rather than guess
+         * from the group.
+         *
+         * The two plans are separated exactly by bit 9, GPIO_1: every word in
+         * the SDRplay plan leaves it clear and every word in the default plan
+         * sets it. There is no overlap. And on both boards measured, the pull
+         * is the opposite of what the correct plan drives -- the RSP1-style
+         * board pulls GPIO_1 up and wants the plan that leaves it low, the
+         * generic board pulls it down and wants the plan that drives it high.
+         *
+         * Read that as the board idling the line and the plan asserting it, and
+         * one bit decides. It reproduces both known boards, and unlike a
+         * majority vote across three pins it has a mechanism behind it rather
+         * than a pattern fitted to two samples.
+         */
+        return ((lo >> 1) & 0x01) ? MIRISDR_HW_SDRPLAY : MIRISDR_HW_DEFAULT;
+    }
+
+failed:
+    /*
+     * Reached only when the readback itself is untrustworthy -- a failed
+     * transfer, or pins that follow the data latch. Deliberately distinct from
+     * an unrecognised pull pattern above: there the hardware answered and the
+     * answer was merely unfamiliar, here it did not answer at all, and the
+     * caller should keep whatever it already had rather than take a guess.
+     */
+    return -1;
+}
+
+mirisdr_hw_flavour_t mirisdr_get_hw_flavour (mirisdr_dev_t *p) {
+    return p ? p->hw_flavour : MIRISDR_HW_DEFAULT;
 }
 
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {

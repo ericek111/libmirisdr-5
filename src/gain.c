@@ -56,7 +56,7 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
     /* 4-9 => baseband, 0 - 59, 60-63 je stejné jako 59 */
     /* 10-11 => mixer gain reduction pouze pro AM režim */
     /* 12 => mixer gain reduction -19dB */
-    /* 13 => lna gain reduction -24dB */
+    /* 13 => lna gain reduction, -24dB below 420 MHz, -7dB in Band IV/V, -4.5dB at L-Band */
     /* 14-16 => DC kalibrace */
     /* 17 => zrychlená DC kalibrace */
     reg1 |= p->gain_reduction_baseband << 4;
@@ -93,6 +93,8 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
     mirisdr_write_reg(p, 0x09, reg1);
 
     /* DC Offset Calibration setup */
+    /* 4-9 => DC offset track timer, 1..63 */
+    /* 10-21 => DC offset refresh rate timer, 2..4095, must exceed the track timer */
     reg6 |= (p->dc_track & 0x3f) << 4;
     reg6 |= (p->dc_period & 0xfff) << 10;
     mirisdr_write_reg(p, 0x09, reg6);
@@ -114,24 +116,88 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
 }
 
 /*
+ * LNA gain reduction is one bit, but the dB it represents is band dependent.
+ * From the MSi001 datasheet (R3v2.0, tables 8-11, "LNA Gain Reduction Gain"):
+ *
+ *      VHF Band II    64 - 108 MHz    24 dB
+ *      Band III      162 - 240 MHz    24 dB
+ *      Band IV/V     470 - 960 MHz     7 dB
+ *      L-Band       1450 - 1675 MHz   4.5 dB
+ *
+ * The AM ports have no LNA at all; the up-convert mixer ("mixbuffer") stands in
+ * for it there, see mirisdr_frontend_gain_db().
+ *
+ * L-Band's 4.5 dB is rounded to 5 because this API works in whole dB. Note the
+ * Mirics SDR API Specification R1.97 books 7 dB for both upper bands, which is
+ * simply wrong above 1 GHz.
+ */
+static int mirisdr_lna_gain_db(mirisdr_band_t band)
+{
+    switch (band)
+    {
+    case MIRISDR_BAND_45:
+        return 7;
+    case MIRISDR_BAND_L:
+        return 5;
+    default:
+        return 24;
+    }
+}
+
+/*
+ * The switched stage ahead of the IQ mixer, whatever it happens to be in this
+ * band: the LNA on the RF bands, and on the AM ports the block-up-convert
+ * mixbuffer that takes its place. Its full-scale value is what the aggregate
+ * gain setting budgets for that stage.
+ *
+ * Port 1 reaches 18 dB and port 2 24 dB (datasheet R3v2.0 table 12, MIXBU).
+ * Neither is a plain switch -- port 1 has 0/6/12/18 dB and port 2 0/24 dB -- but
+ * mirisdr_set_tuner_gain() only ever drives the stage to one end or the other,
+ * exactly as it does the LNA. Port 1's intermediate positions are reachable
+ * through mirisdr_set_mixbuffer_gain().
+ */
+static int mirisdr_frontend_gain_db(mirisdr_band_t band)
+{
+    switch (band)
+    {
+    case MIRISDR_BAND_AM1:
+        return 18;
+    case MIRISDR_BAND_AM2:
+        return 24;
+    default:
+        return mirisdr_lna_gain_db(band);
+    }
+}
+
+/* Maximum total gain for the current band: baseband + LNA or mixbuffer + mixer. */
+static int mirisdr_max_gain_db(mirisdr_band_t band)
+{
+    return 59 + mirisdr_frontend_gain_db(band) + 19;
+}
+
+/*
  * Provide list of available gain settings.
  * Used e.g. from gnuradio-osmosdr/lib/miri
  * The (first) call with *gains==NULL returns number of available gains.
  * The (second) call with *gains!=NULL fills the array and returns the count.
  *
- * The max. available gain depends on the selected band, but is always <= 102.
- * TODO: make this dependent on the band/frequency setting.
+ * The max. available gain depends on the selected band: 102 dB in VHF Band II,
+ * Band III and on AM port 2, 96 dB on AM port 1, 85 dB in Band IV/V and 83 dB at
+ * L-Band. A client that caches the list has to ask again after retuning across a
+ * band edge, and must not reuse a count taken in one band to size the array it
+ * fills in another.
  */
 int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 {
     int i;
+    int max = mirisdr_max_gain_db(p ? p->band : MIRISDR_BAND_VHF);
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_tuner_gains: %p (band: %d)\n", gains, p->band);
 #endif
-    i = 103;
+    i = max + 1;
     if (gains)
     {
-        for (i = 0; i <= 102; i++)
+        for (i = 0; i <= max; i++)
         {
             gains[i] = i;
         }
@@ -142,40 +208,50 @@ int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 
 int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
 {
-    p->gain = gain;
-#if MIRISDR_DEBUG >= 3
-    fprintf(stderr, "mirisdr_set_tuner_gain: %d dB (band: %d)\n", gain, p->band);
-#endif
+    int frontend, max;
+
     if (!p)
     {
         fprintf(stderr, "mirisdr_set_tuner_gain: error: nil device pointer!\n");
         return -1;
     }
+
+    frontend = mirisdr_frontend_gain_db(p->band);
+    max = mirisdr_max_gain_db(p->band);
+
+    p->gain = gain;
+#if MIRISDR_DEBUG >= 3
+    fprintf(stderr, "mirisdr_set_tuner_gain: %d dB (band: %d)\n", gain, p->band);
+#endif
     /*
-     * Pro VHF režim je lna zapnutý +24dB, mixer +19dB a baseband
-     * je možné nastavovat plynule od 0 - 59 dB, z toho je maximální
-     * zesílení 102 dB
-     *
-     * For VHF mode LNA is turned on to + 24 db, mixer to + 19 dB and baseband
-     * can be adjusted continuously from 0 to 59 db, of which the maximum gain of 102 db
+     * The baseband stage is continuous over 0 - 59 dB; the front-end stage and
+     * the mixer are each driven as a single switched step. Maximum total gain is
+     * therefore 59 + front-end + 19: 102 dB where the LNA is worth 24 dB, but
+     * 85 dB in Band IV/V, 83 dB at L-Band and 96 dB on AM port 1.
      */
-    if (p->gain > 102)
+    if (p->gain > max)
     {
-        p->gain = 102;
+        p->gain = max;
     }
     else if (p->gain < 0)
     {
         goto gain_auto;
     }
 
-    /* Nejvyšší citlivost vždy bez redukce mixeru a lna */
-    /* Always the highest sensitivity without reducing the mixer and LNA */
-    if (p->gain >= 43)
+    /*
+     * Give away gain in the order the datasheet prescribes: baseband first, then
+     * the front-end stage, and only then the IQ mixer. The mixer is last because
+     * it does not improve IIP3 and, engaged while baseband reduction is under
+     * 40 dB, can push the DC offset outside the correction range. The lower
+     * breakpoint is 19, which leaves exactly 59 - (19 - 19) ... 59 dB of baseband
+     * reduction, i.e. the mixer only comes in once baseband is exhausted.
+     */
+    if (p->gain >= frontend + 19)
     {
         p->gain_reduction_lna = 0;
         p->gain_reduction_mixbuffer = 0; // LNA equivalent for AM inputs
         p->gain_reduction_mixer = 0;
-        p->gain_reduction_baseband = 59 - (p->gain - 43);
+        p->gain_reduction_baseband = 59 - (p->gain - frontend - 19);
     }
     else if (p->gain >= 19)
     {
@@ -374,10 +450,7 @@ int mirisdr_get_mixbuffer_gain(mirisdr_dev_t *p)
 
 int mirisdr_get_lna_gain(mirisdr_dev_t *p)
 {
-    int gain = 24;
-    if (p->gain_reduction_lna) gain = 0;
-    else if (p->band == MIRISDR_BAND_45) gain = 7;
-    else if (p->band == MIRISDR_BAND_L) gain = 5; /* rounded 4.5 dB */
+    int gain = p->gain_reduction_lna ? 0 : mirisdr_lna_gain_db(p->band);
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_lna_gain: %d dB (band: %d)\n", gain, p->band);
 #endif
