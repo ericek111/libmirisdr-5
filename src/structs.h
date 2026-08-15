@@ -97,6 +97,9 @@ struct mirisdr_dev {
     size_t              xfer_out_pos;
     unsigned char       *xfer_out;
     uint32_t            addr;
+    /* cumulative stream statistics derived from the hardware block counter */
+    uint64_t            stream_total;   /* samples produced since stream start, incl. lost */
+    uint64_t            stream_lost;    /* samples lost (e.g. USB overruns) */
     int                 driver_active;
     int                 bias;
     int                 reg8;

@@ -12,14 +12,18 @@ static int mirisdr_samples_convert_504_s8 (mirisdr_dev_t *p, unsigned char* src,
 
     /* ztracená data */
     if (p->addr != addr) {
-        fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", addr - p->addr, cnt, p->addr, addr);
+        uint32_t lost = addr - p->addr;
+        fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", lost, cnt, p->addr, addr);
         p->addr = addr;
         p->sync_loss_cnt++;
+        p->stream_lost += lost;
+        p->stream_total += lost;
     }
 
     for (i = 16; i < cnt; i+= 1024, ret+= 1008) {
         memcpy(dst + ret, src + i, 1008);
         p->addr+= 504;
+        p->stream_total += 504;
     }
 
     return ret;

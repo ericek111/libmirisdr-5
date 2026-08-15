@@ -138,6 +138,17 @@ MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra
  * The default dc setting is:
  *   0x080001f2 (period = 0x800, track = 0x1f, speedup = 0, mode = 2)
  */
+/*!
+ * Get cumulative stream statistics derived from the hardware per-block
+ * sample counter. total_samples counts every sample the hardware produced
+ * since streaming started, including lost ones; lost_samples counts samples
+ * that never reached the host (e.g. USB overruns). Both are in units of
+ * I/Q sample pairs. When called from within the read callback, the counts
+ * include the current buffer, so the absolute hardware index of the first
+ * sample of that buffer is total_samples - samples_in_buffer.
+ */
+MIRISDR_API int mirisdr_get_stream_stats (mirisdr_dev_t *p, uint64_t *total_samples, uint64_t *lost_samples); /* extra */
+
 MIRISDR_API int mirisdr_set_dc_raw (mirisdr_dev_t *p, uint32_t raw);
 MIRISDR_API uint32_t mirisdr_get_dc_raw (mirisdr_dev_t *p);
 

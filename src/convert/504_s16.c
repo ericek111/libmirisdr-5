@@ -19,8 +19,11 @@ static int mirisdr_samples_convert_504_s16 (mirisdr_dev_t *p, unsigned char* buf
 
         /* potenciálně ztracená data */
         if ((i == 0) && (addr != p->addr)) {
-            fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", addr - p->addr, cnt, p->addr, addr);
+            uint32_t lost = addr - p->addr;
+            fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", lost, cnt, p->addr, addr);
             p->sync_loss_cnt++;
+            p->stream_lost += lost;
+            p->stream_total += lost;
         }
 
         /* přeskočíme hlavičku 16 bitů, 504 I+Q párů */
@@ -32,6 +35,7 @@ static int mirisdr_samples_convert_504_s16 (mirisdr_dev_t *p, unsigned char* buf
     }
 
     p->addr = addr + 504;
+    p->stream_total += (uint64_t)i_max * 504;
 
     /* total used bytes */
     return ret * 2;

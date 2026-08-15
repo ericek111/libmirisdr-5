@@ -310,6 +310,13 @@ failed:
     return -1;
 }
 
+int mirisdr_get_stream_stats (mirisdr_dev_t *p, uint64_t *total_samples, uint64_t *lost_samples) {
+    if (!p) return -1;
+    if (total_samples) *total_samples = p->stream_total;
+    if (lost_samples) *lost_samples = p->stream_lost;
+    return 0;
+}
+
 int mirisdr_reset_buffer (mirisdr_dev_t *p) {
     if (!p) goto failed;
     if (!p->dh) goto failed;

@@ -103,6 +103,10 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 		break;
 	}
 
+	/* stream statistics restart with the hardware counter */
+	p->stream_total = 0;
+	p->stream_lost = 0;
+
 	/*
 	 * Výpočet dělení vzorkovací frekvence
 	 * Min: >= 1.3 Msps
