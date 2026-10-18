@@ -43,6 +43,7 @@ double atofs(char *s)
 	int len;
 	double suff = 1.0;
 	len = strlen(s);
+	if (!len) return 0;
 	last = s[len-1];
 	s[len-1] = '\0';
 	switch (last) {
@@ -72,6 +73,7 @@ double atoft(char *s)
 	int len;
 	double suff = 1.0;
 	len = strlen(s);
+	if (!len) return 0;
 	last = s[len-1];
 	s[len-1] = '\0';
 	switch (last) {
@@ -100,6 +102,7 @@ double atofp(char *s)
 	int len;
 	double suff = 1.0;
 	len = strlen(s);
+	if (!len) return 0;
 	last = s[len-1];
 	s[len-1] = '\0';
 	switch (last) {
@@ -147,7 +150,11 @@ int verbose_set_frequency(mirisdr_dev_t *dev, uint32_t frequency)
 	if (r < 0) {
 		fprintf(stderr, "WARNING: Failed to set center freq.\n");
 	} else {
-		fprintf(stderr, "Tuned to %u Hz.\n", frequency);
+		/* a band's maximum can lower a manual gain set before the tune */
+		int gain = mirisdr_get_tuner_gain(dev);
+
+		if (gain >= 0) fprintf(stderr, "Tuned to %u Hz, tuner gain %d dB.\n", frequency, gain);
+		else fprintf(stderr, "Tuned to %u Hz.\n", frequency);
 	}
 	return r;
 }
@@ -217,7 +224,7 @@ int verbose_gain_set(mirisdr_dev_t *dev, int gain)
 	if (r != 0) {
 		fprintf(stderr, "WARNING: Failed to set tuner gain.\n");
 	} else {
-		fprintf(stderr, "Tuner gain set to %0.2f dB.\n", gain/10.0);
+		fprintf(stderr, "Tuner gain set to %d dB.\n", mirisdr_get_tuner_gain(dev));
 	}
 	return r;
 }

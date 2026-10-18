@@ -20,3 +20,9 @@
 #define DEFAULT_RATE            2000000
 #define DEFAULT_FREQ            90000000
 #define DEFAULT_GAIN            43
+
+/* tuners a receiver can have: two on the RSPduo (mirisdr_tuners_of()) */
+#define MIRISDR_TUNERS          2
+
+/* Hz of each MIRISDR_IF_* mode */
+static const uint32_t mirisdr_if_hz[] = { 0, 450000, 1620000, 2048000 };

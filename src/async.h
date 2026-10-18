@@ -24,3 +24,7 @@
 #define DEFAULT_BULK_TIMEOUT    1000
 
 #define DEFAULT_BUF_NUMBER      32
+
+/* an automatic length buffer is one transfer, so its gaps must fit the buffer info */
+typedef char mirisdr_gaps_fit_iso[(DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS <= MIRISDR_GAPS_MAX) ? 1 : -1];
+typedef char mirisdr_gaps_fit_bulk[(DEFAULT_BULK_BUFFER / 1024 + 1 <= MIRISDR_GAPS_MAX) ? 1 : -1];

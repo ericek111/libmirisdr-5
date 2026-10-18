@@ -80,13 +80,12 @@
 #define MAXIMUM_OVERSAMPLE		16
 #define MAXIMUM_BUF_LENGTH		(MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 #define AUTO_GAIN			-100
-#define BUFFER_DUMP			4096
+#define HOP_SETTLE_MS			20      /* dropped after a hop */
 
 #define FREQUENCIES_LIMIT		1000
 
 static volatile int do_exit = 0;
 static int lcm_post[17] = {1,1,1,3,1,5,3,7,1,9,5,11,3,13,7,15,1};
-static int ACTUAL_BUF_LENGTH;
 
 static int *atan_lut = NULL;
 static int atan_lut_size = 131072; /* 512 KB */
@@ -104,13 +103,14 @@ struct dongle_state
 	uint16_t buf16[MAXIMUM_BUF_LENGTH];
 	uint32_t buf_len;
 	int      ppm_error;
-	int      offset_tuning;
+	float    scale;         /* from the library's float to the int16 the demods take */
+	int      rotate;        /* zero IF: the station lies a quarter of the rate below */
 	int      direct_sampling;
 	int      format;
 	int      transfer;
 	int      bw;
 	int      if_mode;
-	int      mute;
+	volatile int mute;      /* samples still to drop */
 	struct demod_state *demod_target;
 };
 
@@ -194,13 +194,17 @@ void usage(void)
 		"\t[-M modulation (default: fm)]\n"
 		"\t    fm, wbfm, raw, am, usb, lsb\n"
 		"\t    wbfm == -M fm -s 170k -o 4 -A fast -r 32k -l 0 -E deemp\n"
-		"\t    raw mode outputs 2x16 bit IQ pairs\n"
+		"\t    raw mode outputs 2x16 bit IQ pairs, at the rate it says\n"
 		"\t[-s sample_rate (default: 24k)]\n"
 		"\t[-d device_index (default: 0)]\n"
-        "\t[-T device_type device variant (default: 0)]\n"
-        "\t    0:       Default\n"
-        "\t    1:       SDRPlay\n"
-		"\t[-g tuner_gain (default: automatic)]\n"
+		"\t[-T board (default: from the USB IDs)]\n"
+		"\t    0:       a plain MSi2500/MSi001 board\n"
+		"\t    1:       SDRplay RSP1\n"
+		"\t    2:       SDRplay RSP1B\n"
+		"\t    3:       SDRplay RSPdx-R2\n"
+		"\t    4:       SDRplay RSPduo\n"
+		"\t[-g total tuner gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
+		"\t    (default: the library's, 43 dB)]\n"
 		"\t[-m sample format (default: auto]\n"
 		"\t    504:    S8 (fastest)\n"
 		"\t    384:    S10 +2bits \n"
@@ -213,40 +217,45 @@ void usage(void)
 #endif
 		"\t    1:      Isochronous (maximum 196.608 Mbit/s) \n"
 		"\t    2:      Bulk (maximum 333Mbit/s, depends on controller type)\n"
-		"\t[-i IF mode (default: ZERO]\n"
-		"\t    0:       ZERO\n"
+		"\t[-i IF mode (default: auto)]\n"
+		"\t    auto:    450 kHz, or 1620 kHz for a band wider than 480 kHz\n"
+		"\t    0:       ZERO, at 1.3 MS/s or more, with a box filter\n"
 		"\t    450000:  450 kHz\n"
 		"\t    1620000: 1620kHz\n"
 		"\t    2048000: 2048kHz\n"
-		"\t[-w BW mode (default: 8MHz]\n"
-		"\t    200000:  200kHz\n"
-		"\t    300000:  300kHz\n"
-		"\t    600000:  600kHz\n"
-		"\t    1536000: 1536kHz\n"
-		"\t    5000000: 5MHz\n"
-		"\t    6000000: 6MHz\n"
-		"\t    7000000: 7MHz\n"
-		"\t    8000000: 8MHz\n"
+		"\t    a low IF takes any rate: the demod runs at a whole multiple\n"
+		"\t    of the audio rate, which it averages down to\n"
+		"\t[-w BW mode (default: the widest the IF allows)]\n"
+		"\t    200000:  200kHz, 450 kHz IF\n"
+		"\t    300000:  300kHz, 450 kHz IF\n"
+		"\t    600000:  600kHz, any low IF\n"
+		"\t    1536000: 1536kHz, zero, 1620 or 2048 kHz IF\n"
+		"\t    5000000: 5MHz, zero IF, 6, 7 and 8 MHz too\n"
+		"\t    8000000: 8MHz, zero IF\n"
+		"\t    a combination the tuner cannot do is refused\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
+		"\t    rms of the channel, full scale is 16384\n"
 		//"\t    for fm squelch is inverted\n"
-		"\t[-o oversampling (default: 1, 4 recommended)]\n"
-		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-o oversampling, 1 to 16 (default: 1, 4 recommended)]\n"
+		"\t[-p ppm_error of the reference, corrects the tuning (default: 0, or from a serial\n"
+		"\t    ending in \" <ppm>p\")]\n"
 		"\t[-E enable_option (default: none)]\n"
 		"\t    use multiple -E to enable multiple options\n"
 		"\t    edge:   enable lower edge tuning\n"
 		"\t    dc:     enable dc blocking filter\n"
 		"\t    deemp:  enable de-emphasis filter\n"
 		"\t    direct: enable direct sampling\n"
-		"\t    offset: enable offset tuning\n"
+		"\t    offset: not supported, has no effect\n"
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
 		"\t[-r resample_rate (default: none / same as -s)]\n"
-		"\t[-t squelch_delay (default: 10)]\n"
+		"\t[-t squelch_delay in buffers of about 20 ms (default: 10)]\n"
 		"\t    +values will mute/scan, -values will exit\n"
 		"\t[-F fir_size (default: off)]\n"
 		"\t    enables low-leakage downsample filter\n"
 		"\t    size can be 0 or 9.  0 has bad roll off\n"
+		"\t    zero IF only, a low IF has its own filters\n"
 		"\t[-A std/fast/lut choose atan math (default: std)]\n"
 		//"\t[-C clip_path (default: off)\n"
 		//"\t (create time stamped raw clips, requires squelch)\n"
@@ -275,10 +284,10 @@ sighandler(int signum)
 	return FALSE;
 }
 #else
+/* No output here: with SIGPIPE from stderr it would raise the signal again for ever */
 static void sighandler(int signum)
 {
 (void) signum;
-	fprintf(stderr, "Signal caught, exiting!\n");
 	do_exit = 1;
 	mirisdr_cancel_async(dongle.dev);
 }
@@ -286,7 +295,8 @@ static void sighandler(int signum)
 
 /* more cond dumbness */
 #define safe_cond_signal(n, m) pthread_mutex_lock(m); pthread_cond_signal(n); pthread_mutex_unlock(m)
-#define safe_cond_wait(n, m) pthread_mutex_lock(m); pthread_cond_wait(n, m); pthread_mutex_unlock(m)
+/* not once the end is set: its signal may have come before the wait */
+#define safe_cond_wait(n, m) pthread_mutex_lock(m); if (!do_exit) pthread_cond_wait(n, m); pthread_mutex_unlock(m)
 
 /* {length, coef, coef, coef}  and scaled by 2^15
    for now, only length 9, optimal way to get +85% bandwidth */
@@ -306,25 +316,10 @@ int cic_9_tables[][10] = {
 };
 
 
-void rotate_90_s8(char *buf, uint32_t len)
-/* 90 rotation is 1+0j, 0+1j, -1+0j, 0-1j
-   or [0, 1, -3, 2, -4, -5, 7, -6] */
+/* to int16 without wrapping round: full scale with gain is more than it holds */
+static int16_t clip16(int v)
 {
-	uint32_t i;
-	char tmp;
-	for (i=0; i<len; i+=8) {
-		/* uint8_t negation = 255 - x */
-		tmp = -buf[i+3];
-		buf[i+3] = buf[i+2];
-		buf[i+2] = tmp;
-
-		buf[i+4] = -buf[i+4];
-		buf[i+5] = -buf[i+5];
-
-		tmp = -buf[i+6];
-		buf[i+6] = buf[i+7];
-		buf[i+7] = tmp;
-	}
+	return v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
 }
 
 void rotate_90_s16(short *buf, uint32_t len)
@@ -380,30 +375,25 @@ int low_pass_simple(int16_t *signal2, int len, int step)
 			sum += (int)signal2[i + i2];
 		}
 		//signal2[i/step] = (int16_t)(sum / step);
-		signal2[i/step] = (int16_t)(sum);
+		signal2[i/step] = clip16(sum);
 	}
 	signal2[i/step + 1] = signal2[i/step];
 	return len / step;
 }
 
 void low_pass_real(struct demod_state *s)
-/* simple square window FIR */
-// add support for upsampling?
+/* down to rate_out2, a whole fraction of rate_out: the average of each m, carried
+   over from buffer to buffer. In place */
 {
-	int i=0, i2=0;
-	int fast = (int)s->rate_out;
-	int slow = s->rate_out2;
-	while (i < s->result_len) {
+	int i, i2 = 0;
+	int m = s->rate_out / s->rate_out2;
+	for (i = 0; i < s->result_len; i++) {
 		s->now_lpr += s->result[i];
-		i++;
-		s->prev_lpr_index += slow;
-		if (s->prev_lpr_index < fast) {
-			continue;
-		}
-		s->result[i2] = (int16_t)(s->now_lpr / (fast/slow));
-		s->prev_lpr_index -= fast;
+		if (++s->prev_lpr_index < m) {
+			continue;}
+		s->result[i2++] = (int16_t)((s->now_lpr + (s->now_lpr >= 0 ? m / 2 : -(m / 2))) / m);
 		s->now_lpr = 0;
-		i2 += 1;
+		s->prev_lpr_index = 0;
 	}
 	s->result_len = i2;
 }
@@ -494,10 +484,11 @@ int fast_atan2(int y, int x)
 	if (yabs < 0) {
 		yabs = -yabs;
 	}
+	/* 64-bit: the products of full scale samples reach 2^29 */
 	if (x >= 0) {
-		angle = pi4  - pi4 * (x-yabs) / (x+yabs);
+		angle = pi4  - (int)((int64_t)pi4 * ((int64_t)x-yabs) / ((int64_t)x+yabs));
 	} else {
-		angle = pi34 - pi4 * (x+yabs) / (yabs-x);
+		angle = pi34 - (int)((int64_t)pi4 * ((int64_t)x+yabs) / ((int64_t)yabs-x));
 	}
 	if (y < 0) {
 		return -angle;
@@ -516,7 +507,8 @@ int atan_lut_init(void)
 {
 	int i = 0;
 
-	atan_lut = malloc(atan_lut_size * sizeof(int));
+	if (!(atan_lut = malloc(atan_lut_size * sizeof(int)))) {
+		return -1;}
 
 	for (i = 0; i < atan_lut_size; i++) {
 		atan_lut[i] = (int) (atan((double) i / (1<<atan_lut_coef)) / 3.14159 * (1<<14));
@@ -527,7 +519,8 @@ int atan_lut_init(void)
 
 int polar_disc_lut(int ar, int aj, int br, int bj)
 {
-	int cr, cj, x, x_abs;
+	int cr, cj;
+	int64_t x, x_abs;
 
 	multiply(ar, aj, br, -bj, &cr, &cj);
 
@@ -546,21 +539,19 @@ int polar_disc_lut(int ar, int aj, int br, int bj)
 	}
 
 	/* real range -32768 - 32768 use 64x range -> absolute maximum: 2097152 */
-	x = (cj << atan_lut_coef) / cr;
-	x_abs = abs(x);
+	x = ((int64_t)cj * (1 << atan_lut_coef)) / cr;
+	x_abs = x < 0 ? -x : x;
 
 	if (x_abs >= atan_lut_size) {
 		/* we can use linear range, but it is not necessary */
 		return (cj > 0) ? 1<<13 : -(1<<13);
 	}
 
-	if (x > 0) {
-		return (cj > 0) ? atan_lut[x] : atan_lut[x] - (1<<14);
-	} else {
-		return (cj > 0) ? (1<<14) - atan_lut[-x] : -atan_lut[-x];
-	}
-
-	return 0;
+	/* by the side of cr: x rounds to 0 at small angles, which says nothing of
+	   which half it is in */
+	if (cr > 0) {
+		return (x >= 0) ? atan_lut[x] : -atan_lut[-x];}
+	return (cj > 0) ? (1<<14) - atan_lut[x_abs] : atan_lut[x_abs] - (1<<14);
 }
 
 void fm_demod(struct demod_state *fm)
@@ -603,7 +594,7 @@ void am_demod(struct demod_state *fm)
 		//r[i/2] = (int16_t)hypot(lp[i], lp[i+1]);
 		pcm = lp[i] * lp[i];
 		pcm += lp[i+1] * lp[i+1];
-		r[i/2] = (int16_t)sqrt(pcm) * fm->output_scale;
+		r[i/2] = clip16((int)sqrt(pcm) * fm->output_scale);
 	}
 	fm->result_len = fm->lp_len/2;
 	// lowpass? (3khz)  highpass?  (dc)
@@ -616,7 +607,7 @@ void usb_demod(struct demod_state *fm)
 	int16_t *r  = fm->result;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		pcm = lp[i] + lp[i+1];
-		r[i/2] = (int16_t)pcm * fm->output_scale;
+		r[i/2] = clip16(pcm * fm->output_scale);
 	}
 	fm->result_len = fm->lp_len/2;
 }
@@ -628,7 +619,7 @@ void lsb_demod(struct demod_state *fm)
 	int16_t *r  = fm->result;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		pcm = lp[i] - lp[i+1];
-		r[i/2] = (int16_t)pcm * fm->output_scale;
+		r[i/2] = clip16(pcm * fm->output_scale);
 	}
 	fm->result_len = fm->lp_len/2;
 }
@@ -695,12 +686,13 @@ int rms(int16_t *samples, int len, int step)
 /* largely lifted from rtl_power */
 {
 	int i;
-	long p, t, s;
+	int64_t p, t, s;
 	double dc, err;
 
-	p = t = 0L;
+	/* 64-bit: a buffer of full scale squares passes 2^31 */
+	p = t = 0;
 	for (i=0; i<len; i+=step) {
-		s = (long)samples[i];
+		s = (int64_t)samples[i];
 		t += s;
 		p += s * s;
 	}
@@ -709,71 +701,6 @@ int rms(int16_t *samples, int len, int step)
 	err = t * 2 * dc - dc * dc * len;
 
 	return (int)sqrt((p-err) / len);
-}
-
-void arbitrary_upsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* linear interpolation, len1 < len2 */
-{
-	int i = 1;
-	int j = 0;
-	int tick = 0;
-	double frac;  // use integers...
-	while (j < len2) {
-		frac = (double)tick / (double)len2;
-		buf2[j] = (int16_t)(buf1[i-1]*(1-frac) + buf1[i]*frac);
-		j++;
-		tick += len1;
-		if (tick > len2) {
-			tick -= len2;
-			i++;
-		}
-		if (i >= len1) {
-			i = len1 - 1;
-			tick = len2;
-		}
-	}
-}
-
-void arbitrary_downsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* fractional boxcar lowpass, len1 > len2 */
-{
-	int i = 1;
-	int j = 0;
-	int tick = 0;
-	double remainder = 0;
-	double frac;  // use integers...
-	buf2[0] = 0;
-	while (j < len2) {
-		frac = 1.0;
-		if ((tick + len2) > len1) {
-			frac = (double)(len1 - tick) / (double)len2;}
-		buf2[j] += (int16_t)((double)buf1[i] * frac + remainder);
-		remainder = (double)buf1[i] * (1.0-frac);
-		tick += len2;
-		i++;
-		if (tick > len1) {
-			j++;
-			buf2[j] = 0;
-			tick -= len1;
-		}
-		if (i >= len1) {
-			i = len1 - 1;
-			tick = len1;
-		}
-	}
-	for (j=0; j<len2; j++) {
-		buf2[j] = buf2[j] * len2 / len1;}
-}
-
-void arbitrary_resample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* up to you to calculate lengths and make sure it does not go OOB
- * okay for buffers to overlap, if you are downsampling */
-{
-	if (len1 < len2) {
-		arbitrary_upsample(buf1, buf2, len1, len2);
-	} else {
-		arbitrary_downsample(buf1, buf2, len1, len2);
-	}
 }
 
 void full_demod(struct demod_state *d)
@@ -821,50 +748,36 @@ void full_demod(struct demod_state *d)
 	if (d->dc_block) {
 		dc_block_filter(d);}
 	if (d->rate_out2 > 0) {
-		low_pass_real(d);
-		//arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
-	}
+		low_pass_real(d);}
 }
 
 static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
-	int i;
+	uint32_t i;
 	struct dongle_state *s = ctx;
-	char *buf8 = (char*) buf;
+	const float *iq = (const float*) buf;
+	int16_t *out = (int16_t*) s->buf16;
+	/* a cancel before the stream ran was lost */
 	if (do_exit) {
+		mirisdr_cancel_async(dongle.dev);
 		return;}
 	if (!ctx) {
 		return;}
 	struct demod_state *d = s->demod_target;
-	if (s->mute) {
-		if (dongle.format == 1) {
-			for (i=0; i<s->mute; i++) {
-				buf[i] = 0;}
-		} else {
-			for (i=0; i<s->mute * 2; i++) {
-				buf[i] = 0;}
-		}
-		s->mute = 0;
+	/* complex float from the library, the station at 0 Hz (or a quarter of the
+	   rate below at zero IF) */
+	len /= sizeof(float);
+	if (len > MAXIMUM_BUF_LENGTH) {
+		len = MAXIMUM_BUF_LENGTH;}
+	if (s->mute > 0) {
+		s->mute -= (int)len / 2;
+		return;}
+	for (i = 0; i < len; i++) {
+		float v = iq[i] * s->scale;
+		out[i] = v > 32767.0f ? 32767 : v < -32767.0f ? -32767 : (int16_t)lrintf(v);
 	}
-	if (!s->offset_tuning) {
-		if (dongle.format == 1) {
-			rotate_90_s8((char*) buf, len);
-		} else {
-			rotate_90_s16((short*) buf, len >> 1);
-		}
-	}
-	if (dongle.format == 1) {
-		for (i=0; i<(int)len; i++) {
-			s->buf16[i] = (int16_t)buf8[i];
-		}
-	} else {
-		memcpy(s->buf16, buf, len);
-		len>>= 1;
-		for (i = 0; i<(int)len; i++) {
-			/* other parts doesn't expect full short range */
-			s->buf16[i] = (int16_t)s->buf16[i] / 128;
-		}
-	}
+	if (s->rotate) {
+		rotate_90_s16(out, len);}
 	pthread_rwlock_wrlock(&d->rw);
 	memcpy(d->lowpassed, s->buf16, 2*len);
 	d->lp_len = len;
@@ -872,11 +785,15 @@ static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	safe_cond_signal(&d->ready, &d->ready_m);
 }
 
+static volatile int read_result;
+
+/* the stream ends only on a cancel: anything else ends the program too */
 static void *dongle_thread_fn(void *arg)
 {
 	struct dongle_state *s = arg;
-	mirisdr_read_async(s->dev, mirisdr_callback, s,
+	read_result = mirisdr_read_async(s->dev, mirisdr_callback, s,
 		DEFAULT_ASYNC_BUF_NUMBER, s->buf_len);
+	do_exit = 1;
 	return 0;
 }
 
@@ -894,6 +811,9 @@ static void *demod_thread_fn(void *arg)
 		}
 		if (d->squelch_level && d->squelch_hits > d->conseq_squelch) {
 			d->squelch_hits = d->conseq_squelch + 1;  /* hair trigger */
+			if (d->terminate_on_squelch) {
+				do_exit = 1;
+				break;}
 			safe_cond_signal(&controller.hop, &controller.hop_m);
 			continue;
 		}
@@ -919,98 +839,169 @@ static void *output_thread_fn(void *arg)
 	return 0;
 }
 
-static void optimal_settings(int freq, int rate)
+/* The low IFs, the least rate each gives (just over its converter rate / 512) and its
+   widest filter */
+static const struct { uint32_t hz, least, widest; } low_ifs[] = {
+	{ 450000, 3516, 600000 }, { 1620000, 12657, 1536000 }, { 2048000, 13201, 1536000 } };
+
+/* The capture for a demod rate of at least rate_in. The library gives any rate with
+   a low IF, so the demod rate is the audio rate times the oversampling times a whole
+   number: the audio then comes from it by averaging, with no resampling. A low IF
+   gives the station at 0 Hz: by default the 450 kHz one where its filter passes the
+   oversampled band, else 1620 kHz. Zero IF captures at 1.3 MS/s or more, a quarter
+   of the rate off the station, and the box filter takes it down to rate_in */
+static void optimal_settings(void)
 {
-	// giant ball of hacks
-	// seems unable to do a single pass, 2:1
-(void) rate;
-	int capture_freq, capture_rate;
 	struct dongle_state *d = &dongle;
 	struct demod_state *dm = &demod;
-	struct controller_state *cs = &controller;
-	dm->downsample = (1300000 / dm->rate_in) + 1;
-	if (dm->downsample_passes) {
-		dm->downsample_passes = (int)log2(dm->downsample) + 1;
-		dm->downsample = 1 << dm->downsample_passes;
+	int raw = dm->mode_demod == &raw_demod;
+	uint32_t audio = (uint32_t)(dm->rate_out2 > 0 && !raw ? dm->rate_out2 : dm->rate_out);
+	uint32_t unit = audio * (uint32_t)dm->post_downsample, least = 0, j;
+	uint32_t band = (uint32_t)dm->rate_in / (uint32_t)dm->post_downsample;    /* -s */
+	int i = -1, k;
+
+	/* the IF: as asked, or by the band the demod takes in */
+	if (d->if_mode > 0) {
+		for (i = 0; i < 3 && low_ifs[i].hz != (uint32_t)d->if_mode; i++);
+		if (i == 3) {
+			fprintf(stderr, "No %d Hz IF.\n", d->if_mode);
+			exit(1);}
+	} else if (d->if_mode < 0) {
+		i = (band <= 0.8 * low_ifs[0].widest) ? 0 : 1;}
+	if (i >= 0) {
+		least = low_ifs[i].least;}
+
+	/* the least whole multiple that reaches the demod rate and the IF's least */
+	j = ((uint32_t)dm->rate_in + unit - 1) / unit;
+	if (j < 1) {
+		j = 1;}
+	while (unit * j < least) {
+		j++;}
+	dm->rate_in = (int)(unit * j);
+	dm->rate_out = dm->rate_in / dm->post_downsample;
+	dm->rate_out2 = (!raw && j > 1) ? (int)audio : -1;
+
+	if (i >= 0) {
+		if (dm->downsample_passes) {
+			fprintf(stderr, "-F has no effect with a low IF.\n");}
+		dm->downsample = 1;
+		dm->downsample_passes = 0;
+		d->if_mode = (int)low_ifs[i].hz;
+		d->rate = (uint32_t)dm->rate_in;
+		d->rotate = 0;
+	} else {
+		dm->downsample = (1300000 / dm->rate_in) + 1;
+		if (dm->downsample_passes) {
+			dm->downsample_passes = (int)log2(dm->downsample) + 1;
+			dm->downsample = 1 << dm->downsample_passes;
+		}
+		d->if_mode = 0;
+		d->rate = (uint32_t)(dm->downsample * dm->rate_in);
+		d->rotate = 1;
 	}
-	capture_freq = freq;
-	capture_rate = dm->downsample * dm->rate_in;
-	if (!d->offset_tuning) {
-		capture_freq = freq + capture_rate/4;}
-	capture_freq += cs->edge * dm->rate_in / 2;
-	dm->output_scale = (1<<15) / (128 * dm->downsample);
-	if (dm->output_scale < 1) {
-		dm->output_scale = 1;}
+
+	/* full scale 16384 after the channel filter, the box filter's sum included */
+	d->scale = 16384.0f / dm->downsample;
+	dm->output_scale = 2;
 	if (dm->mode_demod == &fm_demod) {
 		dm->output_scale = 1;}
-	d->freq = (uint32_t)capture_freq;
-	d->rate = (uint32_t)capture_rate;
+
+	/* about 20 ms a buffer, of whole groups of four for the rotation and of the
+	   oversampling */
+	k = 16 * lcm_post[dm->post_downsample];
+	i = ((int)(d->rate / 50) / k) * k;
+	if (i < k) {
+		i = k;}
+	if (i > MAXIMUM_BUF_LENGTH / 2) {
+		i = (MAXIMUM_BUF_LENGTH / 2 / k) * k;}
+	d->buf_len = (uint32_t)i * 2 * sizeof(float);
+}
+
+/* Where to tune for a station: a reference ppm_error high puts the LO as much
+   above what it is told, so it is told less */
+static uint32_t capture_freq(uint32_t freq)
+{
+	freq += controller.edge * demod.rate_in / 2;
+	if (dongle.rotate) {
+		freq += dongle.rate / 4;}
+	return (uint32_t)llround((double)freq / (1.0 + dongle.ppm_error * 1e-6));
+}
+
+/* The first channel's tune and the stream, before any thread runs: the stream
+   starts on them. Hops keep the gain in force, which follows the band */
+static mirisdr_tune_config_t hop_tc;
+
+static int dongle_setup(struct controller_state *s)
+{
+	static const char *formats[] = { "AUTO", "504_S8", "384_S16", "336_S16", "252_S16" };
+	mirisdr_stream_config_t sc;
+	mirisdr_stream_result_t sr;
+	mirisdr_tune_config_t tc;
+	mirisdr_tune_result_t tr;
+
+	/* set up primary channel */
+	dongle.freq = capture_freq(s->freqs[0]);
+	if (dongle.direct_sampling) {
+		verbose_direct_sampling(dongle.dev, 1);}
+
+	if (dongle.rotate) {
+		fprintf(stderr, "Oversampling input by: %ix.\n", demod.downsample);}
+	fprintf(stderr, "Oversampling output by: %ix.\n", demod.post_downsample);
+	fprintf(stderr, "Buffer size: %0.2fms\n",
+		1000 * (float)dongle.buf_len / (2 * sizeof(float)) / (float)dongle.rate);
+
+	mirisdr_get_tune(dongle.dev, 0, &tc, NULL);
+	tc.frequency = dongle.freq;
+	tc.if_freq = (uint32_t)dongle.if_mode;
+	tc.bandwidth = dongle.bw;
+	if (dongle.gain != AUTO_GAIN) {
+		tc.gain.mode = MIRISDR_GAIN_TOTAL;
+		tc.gain.total = dongle.gain;
+	}
+	if (mirisdr_tune(dongle.dev, 0, &tc, &tr) < 0) {
+		fprintf(stderr, "Failed to tune.\n");
+		return -1;
+	}
+
+	mirisdr_get_stream(dongle.dev, &sc, NULL);
+	sc.baseband = 1;
+	sc.rate = dongle.rate;
+	sc.format = formats[dongle.format];
+	if (dongle.transfer == 1) {
+		sc.transfer = "ISOC";}
+	if (dongle.transfer == 2) {
+		sc.transfer = "BULK";}
+	if (mirisdr_set_stream(dongle.dev, &sc, &sr) < 0) {
+		fprintf(stderr, "Failed to set up the stream.\n");
+		return -1;
+	}
+	mirisdr_get_tune(dongle.dev, 0, NULL, &tr);
+	if (dongle.if_mode) {
+		fprintf(stderr, "Sampling at %u S/s, %s, %d Hz IF, filtered down to %u S/s%s%s.\n",
+			sr.adc_rate, sr.format, dongle.if_mode, sr.rate, sr.resampled ? ", resampled" : "",
+			sr.nco ? ", with the NCO" : "");
+	} else {
+		fprintf(stderr, "Sampling at %u S/s, %s, zero IF.\n", sr.rate, sr.format);}
+	if (sr.adc_clock > MIRISDR_ADC_CLOCK_BEST)
+		fprintf(stderr, "The converters clock at %.1f MHz, past their best %.0f MHz: their resolution drops.\n",
+		        sr.adc_clock / 1e6, MIRISDR_ADC_CLOCK_BEST / 1e6);
+	if (demod.mode_demod == &raw_demod) {
+		fprintf(stderr, "Output at %d Hz.\n", demod.rate_in);
+	} else if (demod.rate_out2 > 0 && demod.rate_out2 != demod.rate_out) {
+		fprintf(stderr, "Output at %d Hz, averaged down from %d Hz.\n", demod.rate_out2, demod.rate_out);
+	} else {
+		fprintf(stderr, "Output at %d Hz.\n", demod.rate_out);}
+	fprintf(stderr, "Tuned to %u Hz, bandwidth %u Hz, tuner gain %d dB.\n", dongle.freq, tr.bandwidth, tr.gain.total);
+
+	hop_tc = tc;
+	hop_tc.gain.mode = MIRISDR_GAIN_KEEP;
+	return 0;
 }
 
 static void *controller_thread_fn(void *arg)
 {
-	// thoughts for multiple dongles
-	// might be no good using a controller thread if retune/rate blocks
-	int i;
 	struct controller_state *s = arg;
-
-	if (s->wb_mode) {
-		for (i=0; i < s->freq_len; i++) {
-			s->freqs[i] += 16000;}
-	}
-
-	/* set up primary channel */
-	optimal_settings(s->freqs[0], demod.rate_in);
-	if (dongle.direct_sampling) {
-		verbose_direct_sampling(dongle.dev, 1);}
-	if (dongle.offset_tuning) {
-		verbose_offset_tuning(dongle.dev);}
-
-	/* Set the frequency */
-	verbose_set_frequency(dongle.dev, dongle.freq);
-	fprintf(stderr, "Oversampling input by: %ix.\n", demod.downsample);
-	fprintf(stderr, "Oversampling output by: %ix.\n", demod.post_downsample);
-	fprintf(stderr, "Buffer size: %0.2fms\n",
-		1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
-
-	/* Set sample format */
-	switch (dongle.format) {
-	case 1:
-		mirisdr_set_sample_format(dongle.dev, "504_S8");
-		break;
-	case 2:
-		mirisdr_set_sample_format(dongle.dev, "384_S16");
-		break;
-	case 3:
-		mirisdr_set_sample_format(dongle.dev, "336_S16");
-		break;
-	case 4:
-		mirisdr_set_sample_format(dongle.dev, "252_S16");
-		break;
-	default:
-		mirisdr_set_sample_format(dongle.dev, "AUTO");
-		break;
-	}
-
-	/* Set USB transfer type */
-	switch (dongle.transfer) {
-	case 1:
-		mirisdr_set_transfer(dongle.dev, "ISOC");
-		break;
-	case 2:
-		mirisdr_set_transfer(dongle.dev, "BULK");
-		break;
-	}
-
-	/* Set IF mode */
-	mirisdr_set_if_freq(dongle.dev, dongle.if_mode);
-
-	/* Set bandwidth */
-	mirisdr_set_bandwidth(dongle.dev, dongle.bw);
-
-	/* Set the sample rate */
-	verbose_set_sample_rate(dongle.dev, dongle.rate);
-	fprintf(stderr, "Output at %u Hz.\n", demod.rate_in/demod.post_downsample);
+	mirisdr_tune_config_t tc = hop_tc;
 
 	while (!do_exit) {
 		safe_cond_wait(&s->hop, &s->hop_m);
@@ -1018,9 +1009,11 @@ static void *controller_thread_fn(void *arg)
 			continue;}
 		/* hacky hopping */
 		s->freq_now = (s->freq_now + 1) % s->freq_len;
-		optimal_settings(s->freqs[s->freq_now], demod.rate_in);
-		mirisdr_set_center_freq(dongle.dev, dongle.freq);
-		dongle.mute = BUFFER_DUMP;
+		dongle.freq = capture_freq(s->freqs[s->freq_now]);
+		tc.frequency = dongle.freq;
+		if (mirisdr_tune(dongle.dev, 0, &tc, NULL) < 0) {
+			fprintf(stderr, "Failed to tune to %u Hz.\n", dongle.freq);}
+		dongle.mute = (int)(dongle.rate * HOP_SETTLE_MS / 1000);
 	}
 	return 0;
 }
@@ -1030,10 +1023,16 @@ void frequency_range(struct controller_state *s, char *arg)
 	char *start, *stop, *step;
 	int i;
 	start = arg;
-	stop = strchr(start, ':') + 1;
+	if (!(stop = strchr(start, ':')) || !(step = strchr(stop + 1, ':'))) {
+		fprintf(stderr, "A range is start:stop:step, %s is not.\n", arg);
+		exit(1);}
+	stop++;
+	step++;
 	stop[-1] = '\0';
-	step = strchr(stop, ':') + 1;
 	step[-1] = '\0';
+	if ((int)atofs(step) <= 0 || (int)atofs(stop) < (int)atofs(start)) {
+		fprintf(stderr, "The range %s:%s:%s has no frequencies.\n", start, stop, step);
+		exit(1);}
 	for(i=(int)atofs(start); i<=(int)atofs(stop); i+=(int)atofs(step))
 	{
 		s->freqs[s->freq_len] = (uint32_t)i;
@@ -1048,10 +1047,9 @@ void frequency_range(struct controller_state *s, char *arg)
 void dongle_init(struct dongle_state *s)
 {
 	s->rate = DEFAULT_SAMPLE_RATE;
-	s->gain = AUTO_GAIN; // tenths of a dB
+	s->gain = AUTO_GAIN; /* dB, AUTO_GAIN: the library's */
 	s->mute = 0;
 	s->direct_sampling = 0;
-	s->offset_tuning = 0;
 	s->demod_target = &demod;
 	s->format = 0;
 #if !defined (_WIN32) || defined(__MINGW32__)
@@ -1059,8 +1057,8 @@ void dongle_init(struct dongle_state *s)
 #else
 	s->transfer = 2;
 #endif
-	s->bw = 8000000;
-	s->if_mode = 0;
+	s->bw = 0;              /* the widest the IF allows */
+	s->if_mode = -1;        /* auto */
 }
 
 void demod_init(struct demod_state *s)
@@ -1160,7 +1158,7 @@ int main(int argc, char **argv)
 	demod_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
-    mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_DEFAULT;
+    mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
     int intval;
 
 	while ((opt = getopt(argc, argv, "b:d:T:e:f:g:i:l:m:o:p:r:s:t:w:E:F:A:M:h")) != -1) {
@@ -1171,10 +1169,12 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= 1))
+            if ((intval < 0) || (intval > MIRISDR_HW_RSPDUO))
             {
-                hw_flavour = (mirisdr_hw_flavour_t) intval;
+                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_RSPDUO);
+                exit(1);
             }
+            hw_flavour = (mirisdr_hw_flavour_t) intval;
             break;
 		case 'e':
 			if ((strcmp("ISOC", optarg) == 0) ||
@@ -1196,10 +1196,10 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'g':
-			dongle.gain = (int)(atof(optarg) * 10);
+			dongle.gain = (int)lround(atof(optarg) * 10);
 			break;
 		case 'i':
-			dongle.if_mode = atoi(optarg);
+			dongle.if_mode = strcmp(optarg, "auto") ? atoi(optarg) : -1;
 			break;
 		case 'l':
 			demod.squelch_level = (int)atof(optarg);
@@ -1213,19 +1213,31 @@ int main(int argc, char **argv)
 				dongle.format = 3;}
 			if (strcmp("252", optarg) == 0) {
 				dongle.format = 4;}
+			if (strcmp("auto", optarg) == 0) {
+				dongle.format = 0;}
+			else if (!dongle.format) {
+				fprintf(stderr, "-m %s is not a format.\n", optarg);
+				exit(1);}
 			break;
 		case 's':
-			demod.rate_in = (uint32_t)atofs(optarg);
-			demod.rate_out = (uint32_t)atofs(optarg);
+			demod.rate_in = (int)atofs(optarg);
+			demod.rate_out = (int)atofs(optarg);
+			if (demod.rate_in <= 0) {
+				fprintf(stderr, "-s needs a rate.\n");
+				exit(1);}
 			break;
 		case 'r':
 			output.rate = (int)atofs(optarg);
 			demod.rate_out2 = (int)atofs(optarg);
+			if (demod.rate_out2 <= 0) {
+				fprintf(stderr, "-r needs a rate.\n");
+				exit(1);}
 			break;
 		case 'o':
 			demod.post_downsample = (int)atof(optarg);
 			if (demod.post_downsample < 1 || demod.post_downsample > MAXIMUM_OVERSAMPLE) {
-				fprintf(stderr, "Oversample must be between 1 and %i\n", MAXIMUM_OVERSAMPLE);}
+				fprintf(stderr, "Oversample must be between 1 and %i\n", MAXIMUM_OVERSAMPLE);
+				exit(1);}
 			break;
 		case 't':
 			demod.conseq_squelch = (int)atof(optarg);
@@ -1251,7 +1263,7 @@ int main(int argc, char **argv)
 			if (strcmp("direct",  optarg) == 0) {
 				dongle.direct_sampling = 1;}
 			if (strcmp("offset",  optarg) == 0) {
-				dongle.offset_tuning = 1;}
+				fprintf(stderr, "Warning: -E offset is not supported and has no effect.\n");}
 			break;
 		case 'F':
 			demod.downsample_passes = 1;  /* truthy placeholder */
@@ -1263,7 +1275,9 @@ int main(int argc, char **argv)
 			if (strcmp("fast", optarg) == 0) {
 				demod.custom_atan = 1;}
 			if (strcmp("lut",  optarg) == 0) {
-				atan_lut_init();
+				if (atan_lut_init() < 0) {
+					fprintf(stderr, "Out of memory for the atan table.\n");
+					exit(1);}
 				demod.custom_atan = 2;}
 			break;
 		case 'M':
@@ -1301,6 +1315,8 @@ int main(int argc, char **argv)
 	if (!output.rate) {
 		output.rate = demod.rate_out;}
 
+	optimal_settings();
+
 	sanity_checks();
 
 	if (controller.freq_len > 1) {
@@ -1312,7 +1328,6 @@ int main(int argc, char **argv)
 		output.filename = argv[optind];
 	}
 
-	ACTUAL_BUF_LENGTH = lcm_post[demod.post_downsample] * DEFAULT_BUF_LENGTH;
 
 	if (!dev_given) {
 		dongle.dev_index = verbose_device_search("0");
@@ -1322,13 +1337,19 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	r = mirisdr_open(&dongle.dev, (uint32_t)dongle.dev_index);
+	{
+		mirisdr_open_config_t cfg;
+
+		mirisdr_open_config_default(&cfg);
+		cfg.index = (uint32_t)dongle.dev_index;
+		cfg.hw_flavour = hw_flavour;
+		r = mirisdr_open_ex(&dongle.dev, &cfg);
+	}
 	if (r < 0) {
 		fprintf(stderr, "Failed to open Mirics device #%d.\n", dongle.dev_index);
 		exit(1);
 	}
 
-	mirisdr_set_hw_flavour(dongle.dev, hw_flavour);
 
 #if !defined (_WIN32) || defined(__MINGW32__)
 	sigact.sa_handler = sighandler;
@@ -1346,18 +1367,11 @@ int main(int argc, char **argv)
 		demod.deemph_a = (int)round(1.0/((1.0-exp(-1.0/(demod.rate_out * 75e-6)))));
 	}
 
-	/* Set the tuner gain */
-	if (dongle.gain == AUTO_GAIN) {
-		verbose_auto_gain(dongle.dev);
-	} else {
-		dongle.gain = nearest_gain(dongle.dev, dongle.gain);
-		verbose_gain_set(dongle.dev, dongle.gain);
-	}
-
 	if (!custom_ppm) {
 		verbose_ppm_eeprom(dongle.dev, &(dongle.ppm_error));
 	}
-	verbose_ppm_set(dongle.dev, dongle.ppm_error);
+	if (dongle.ppm_error) {
+		fprintf(stderr, "Tuning corrected for a reference %d ppm off.\n", dongle.ppm_error);}
 
 	if (strcmp(output.filename, "-") == 0) { /* Write samples to stdout */
 		output.file = stdout;
@@ -1374,11 +1388,15 @@ int main(int argc, char **argv)
 
 	//r = mirisdr_set_testmode(dongle.dev, 1);
 
+	if (dongle_setup(&controller) < 0) {
+		mirisdr_close(dongle.dev);
+		exit(1);
+	}
+
 	/* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dongle.dev);
 
 	pthread_create(&controller.thread, NULL, controller_thread_fn, (void *)(&controller));
-	usleep(100000);
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
@@ -1387,10 +1405,11 @@ int main(int argc, char **argv)
 		usleep(100000);
 	}
 
-	if (do_exit) {
-		fprintf(stderr, "\nUser cancel, exiting...\n");}
-	else {
+	r = read_result;
+	if (r < 0) {
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);}
+	else {
+		fprintf(stderr, "\nUser cancel, exiting...\n");}
 
 	mirisdr_cancel_async(dongle.dev);
 	pthread_join(dongle.thread, NULL);
@@ -1410,7 +1429,7 @@ int main(int argc, char **argv)
 		fclose(output.file);}
 
 	mirisdr_close(dongle.dev);
-	return r >= 0 ? r : -r;
+	return (r < 0) ? 1 : 0;
 }
 
 // vim: tabstop=8:softtabstop=8:shiftwidth=8:noexpandtab

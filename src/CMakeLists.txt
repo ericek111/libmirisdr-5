@@ -26,6 +26,7 @@ add_library(mirisdr_shared SHARED
 
 target_link_libraries(mirisdr_shared
     ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
 )
 
 set_target_properties(mirisdr_shared PROPERTIES DEFINE_SYMBOL "mirisdr_EXPORTS")
@@ -45,9 +46,16 @@ endif()
 
 target_link_libraries(mirisdr_static
     ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
 )
 
 set_property(TARGET mirisdr_static APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )
+
+# the baseband NCO's sine and cosine
+if(UNIX)
+target_link_libraries(mirisdr_shared m)
+target_link_libraries(mirisdr_static m)
+endif()
 
 if(NOT WIN32)
 # Force same library filename for static and shared variants of the library
@@ -59,7 +67,9 @@ endif()
 ########################################################################
 add_executable(miri_sdr miri_sdr.c)
 add_executable(miri_fm miri_fm.c)
-set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm)
+add_executable(miri_eeprom miri_eeprom.c)
+add_executable(miri_test miri_test.c)
+set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm miri_eeprom miri_test)
 
 target_link_libraries(miri_sdr mirisdr_shared
     ${LIBUSB_LIBRARIES}
@@ -71,8 +81,31 @@ target_link_libraries(miri_fm mirisdr_shared
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
+target_link_libraries(miri_eeprom mirisdr_shared
+    ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+target_link_libraries(miri_test mirisdr_shared
+    ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+if(MIRISDR_SOAPY)
+    # the soapy group: the module from this build, else the installed one. Its own
+    # library keeps SoapySDR's C++ compile options off the C sources
+    add_library(miri_test_soapy STATIC miri_test_soapy.cpp)
+    target_include_directories(miri_test_soapy PRIVATE ${SoapySDR_INCLUDE_DIRS})
+    target_link_libraries(miri_test_soapy PRIVATE ${SoapySDR_LIBRARIES})
+    target_link_libraries(miri_test miri_test_soapy)
+    target_compile_definitions(miri_test PRIVATE MIRI_TEST_SOAPY
+        MIRI_SOAPY_MODULE_BUILD="$<TARGET_FILE:mirisdrSupport>"
+        MIRI_SOAPY_MODULE_INSTALL="${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX}/SoapySDR/modules${SOAPY_SDR_ABI_VERSION}/$<TARGET_FILE_NAME:mirisdrSupport>")
+    add_dependencies(miri_test mirisdrSupport)
+endif()
+
 if(UNIX)
 target_link_libraries(miri_fm m)
+target_link_libraries(miri_test m)
 endif()
 
 if(WIN32)

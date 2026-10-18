@@ -9,11 +9,15 @@ lib_LTLIBRARIES = libmirisdr.la
 
 libmirisdr_la_SOURCES = libmirisdr.c
 libmirisdr_la_LDFLAGS = -version-info $(LIBVERSION)
+libmirisdr_la_LIBADD = $(LIBM)
 
-bin_PROGRAMS         = miri_sdr miri_fm
+bin_PROGRAMS         = miri_sdr miri_fm miri_eeprom
 
 miri_sdr_SOURCES     = miri_sdr.c
 miri_sdr_LDADD       = libmirisdr.la
 
 miri_fm_SOURCES     = miri_fm.c
 miri_fm_LDADD       = libmirisdr.la $(LIBM)
+
+miri_eeprom_SOURCES = miri_eeprom.c
+miri_eeprom_LDADD   = libmirisdr.la

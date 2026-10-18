@@ -59,10 +59,13 @@
 
 typedef struct
 {
-    uint32_t low_cut;
+    uint32_t low_khz;   /* the row from this frequency, kHz */
     int mode;
     int upconvert_mixer_on;
     int am_port;
     int lo_div;
     uint32_t band_select_word;
+    int if1_low;        /* AM low side: first IF this many x 24 MHz (XTALSEL 7 - n), 0 = high side 120 MHz */
+    uint16_t expander;  /* SDRplay: expander IODIR word, 0 bits pulled low (sdrplay.c), 0 = none */
+    int amp_db;         /* the board's amplifier on this path (RSP1B, RSPdx-R2, RSPduo), dB, 0 = none */
 } hw_switch_freq_plan_t;

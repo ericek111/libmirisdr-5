@@ -1,39 +1,36 @@
 
 /*
- * 10+2 bitový formát
- * 1024 bajtů odpovídá 768 hodnotám
- * struktura:
- *   16b hlavička
- *  984b 6 bloků o velikosti 164b
- *      160b = 128x 10b hodnot
- *        4b = posun vlevo 2b
- *   24b kontrolní součet
+ * 10+2 bit format
+ * 1024 bytes hold 768 values
+ * structure:
+ *   16b header
+ *  984b 6 blocks of 164b
+ *      160b = 128x 10b values
+ *        4b = 2b left shifts
+ *   24b checksum
  */
 static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf, uint8_t *dst8, int cnt) {
     int i, i_max, j, k, ret = 0;
-    uint32_t addr = 0, shift;
+    uint32_t shift;
     uint8_t *src = buf;
     int16_t *dst = (int16_t*) dst8;
 
-    /* dostáváme 1-3 1024 bytů dlouhé bloky, poslední část je 24 bitů, tu nezpracováváme */
+    /* we get 1-3 blocks of 1024 bytes, the last 24 bytes of each are not used */
     for (i_max = cnt >> 10, i = 0; i < i_max; i++, src+= 24) {
-        /* pozice hlavičky */
-        addr = src[3] << 24 | src[2] << 16 | src[1] << 8 | src[0] << 0;
-
-        /* potenciálně ztracená data */
-        if ((i == 0) && (addr != p->addr)) {
-            fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", addr - p->addr, cnt, p->addr, addr);
-            p->sync_loss_cnt++;
+        /* potentially lost data */
+        if (mirisdr_addr_next(p, src, p->addr_step)) {
+            src+= 1000;
+            continue;
         }
 
-        /* přeskočíme hlavičku 16 bitů, 6 bloků, poslední 4 bajtový posuvný blok zpracujeme */
+        /* skip the 16 byte header, 6 blocks, each with its 4 byte shift block at the end */
         for (src+= 16, j = 0; j < 6; j++, src+= 4) {
-            /* 2 bity pro každou hodnotu - určení posunu */
+            /* 2 bits for each value: its shift */
             shift = src[160 + 3] << 24 | src[160 + 2] << 16 | src[160 + 1] << 8 | src[160 + 0] << 0;
 
-            /* 16x 10 bajtů */
+            /* 16x 10 bytes */
             for (k = 0; k < 16; k++, src+= 10, ret+= 8) {
-                /* 10 bajtů na 8 vzorků, plný rozsah zaručí správné znaménko */
+                /* 10 bytes for 8 samples, full scale gives the right sign */
                 dst[ret + 0] = ((src[0] & 0xff) << 6) | ((src[1] & 0x03) << 14);
                 dst[ret + 1] = ((src[1] & 0xfc) << 4) | ((src[2] & 0x0f) << 12);
                 dst[ret + 2] = ((src[2] & 0xf0) << 2) | ((src[3] & 0x3f) << 10);
@@ -43,7 +40,7 @@ static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf
                 dst[ret + 6] = ((src[7] & 0xf0) << 2) | ((src[8] & 0x3f) << 10);
                 dst[ret + 7] = ((src[8] & 0xc0) << 0) | ((src[9] & 0xff) <<  8);
 
-                /* posun vpravo respektuje signed bit */
+                /* the right shift keeps the sign bit */
                 switch ((shift >> (2 * k)) & 0x3) {
                 case 0:
                     dst[ret + 0]>>= 2;
@@ -71,7 +68,6 @@ static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf
         }
     }
 
-    p->addr = addr + 384;
 
     /* total used bytes */
     return ret * 2;

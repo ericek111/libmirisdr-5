@@ -35,12 +35,27 @@ find_package(Git QUIET)
 if(GIT_FOUND)
     message(STATUS "Extracting version information from git describe...")
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --always --abbrev=4 --long
+        COMMAND ${GIT_EXECUTABLE} describe --abbrev=4 --long
         OUTPUT_VARIABLE GIT_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE GIT_DESCRIBE_RESULT ERROR_QUIET
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
+    # no annotated tag: the version set above with the commit
+    if(NOT GIT_DESCRIBE_RESULT EQUAL 0)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
+            OUTPUT_VARIABLE GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE GIT_HASH_RESULT ERROR_QUIET
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        )
+        if(GIT_HASH_RESULT EQUAL 0)
+            set(GIT_DESCRIBE "${MAJOR_VERSION}.${MINOR_VERSION}git-g${GIT_HASH}")
+        else()
+            set(GIT_DESCRIBE "${MAJOR_VERSION}.${MINOR_VERSION}git")
+        endif()
+    endif()
 else()
-    set(GIT_DESCRIBE "v${MAJOR_VERSION}.${MINOR_VERSION}.x-xxx-xunknown")
+    set(GIT_DESCRIBE "${MAJOR_VERSION}.${MINOR_VERSION}git")
 endif()
 
 ########################################################################

@@ -47,7 +47,7 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
 # Set the version information here
 set(VERSION_INFO_MAJOR_VERSION 5) # increment major on api compatibility changes
-set(VERSION_INFO_MINOR_VERSION 0) # increment minor on feature-level changes
+set(VERSION_INFO_MINOR_VERSION 1) # increment minor on feature-level changes
 set(VERSION_INFO_PATCH_VERSION git) # increment patch for bug fixes and docs
 include(Version) # setup version info
 
@@ -117,8 +117,28 @@ endif (DETACH_KERNEL_DRIVER)
 ########################################################################
 # Add subdirectories
 ########################################################################
+########################################################################
+# SoapySDR module, and miri_test's tests of it
+########################################################################
+option(ENABLE_SOAPY "Build the SoapySDR module when SoapySDR is found" ON)
+set(MIRISDR_SOAPY OFF)
+if(ENABLE_SOAPY)
+    find_package(SoapySDR CONFIG QUIET)
+    if(SoapySDR_FOUND)
+        message(STATUS "Building the SoapySDR module")
+        enable_language(CXX)
+        set(MIRISDR_SOAPY ON)
+    else()
+        message(STATUS "SoapySDR not found, not building its module")
+    endif()
+endif()
+
 add_subdirectory(include)
 add_subdirectory(src)
+
+if(MIRISDR_SOAPY)
+    add_subdirectory(src/soapy)
+endif()
 
 ########################################################################
 # Create Pkg Config File
@@ -130,6 +150,16 @@ ENDFOREACH(inc)
 FOREACH(lib ${LIBUSB_LIBRARY_DIRS})
     LIST(APPEND MIRISDR_PC_LIBS "-L${lib}")
 ENDFOREACH(lib)
+
+# the transfers' lock: a critical section on Windows, pthreads elsewhere
+IF(NOT WIN32)
+    LIST(APPEND MIRISDR_PC_LIBS "${CMAKE_THREAD_LIBS_INIT}")
+ENDIF(NOT WIN32)
+
+# the baseband NCO's sine and cosine
+IF(UNIX)
+    LIST(APPEND MIRISDR_PC_LIBS "-lm")
+ENDIF(UNIX)
 
 # use space-separation format for the pc file
 STRING(REPLACE ";" " " MIRISDR_PC_CFLAGS "${MIRISDR_PC_CFLAGS}")

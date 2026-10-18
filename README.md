@@ -1,76 +1,54 @@
-LibMiriSDR-5
+LibMiriSDR-6
 ============
 
-This is (yet) another flavour of libmirisdr initiated with original libmirisdr-2 from Miroslav Slugeň and additions of Leif Åsbrink SM5BSZ in libmirisdr-3-bsz and further additions from Edouard Griffiths (f4exb) in libmirisdr-4.
+A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
 
-Note these improvements and bug fixes:
+This is another flavour of libmirisdr, started from the original libmirisdr-2 by Miroslav Slugeň, with additions by Leif Åsbrink SM5BSZ in libmirisdr-3-bsz and by Edouard Griffiths (f4exb) in libmirisdr-4, and by Erik Bročko  in libmirisdr-5.
 
-<h2>Improvements</h2>
+This library is an API compatible drop-in replacement for libmirisdr-5, it only adds extra functions providing additional functionality.
 
-  - Better support of SDRPlay through a "flavour" option in the open function. This indicator can be used throughout the code if necessary. At present it drives the frequency plan that drives the choice between the different receiving paths of the MSi001 depending on frequency.
-  - Remove useless auto gain feature that is just fixed gain in fact. The setter/getter still exists for compatibility but effectively does nothing.
-  - Set the RPATH on the executables so you don't have to set LD_LIBRARY_PATH with the binaries installed by cmake.
-  - Use Unix framework when compiling under Windows witn MinGW. This may fix possible bugs.
-  - Use more meaningful variable names for what is actually gain reductions and not gains.
-  - Some comments in the code were translated from Czech to English (Google translated) to ease understanding by the masses.
-  
-<h2>Bug fixes</h2>
+<h2>Documentation</h2>
 
-  - Stop using a deprecated version of libusb.h (1.0.13) and rely on the one installed in the system or specified in the cmake command line.
-  - Restore gain settings after a frequency, bandwidth or IF change as this affects the gain settings.
-  - Corrected baseband gain setting.
-  - Corrected LNA gains for 45 and L bands.
-
-<h2>Interface</h2>
-
-The interface description is reverse engineered from the code base and datasheed info and is far from being complete. In case of issues (unexpected behaviour of the SDR receiver) or just curiosity, it is recommended to `#define MIRISDR_DEBUG 1` in `include/mirisdr.h` and recompile the library to enable debug output on `stderr`.
+  - [Using the receivers with SoapySDR](doc/soapysdr.md): for SDR++, GQRX, CubicSDR, GNU Radio and other programs. Sample rates, filters, gain, settings and the device string.
+  - [The C API](doc/c-api.md): for your own programs. Opening, tuning, streaming, baseband output, time stamps and scanning.
 
 
-<h3>Gain</h3>
+<h2>Building</h2>
 
-The MSi001 uses attenuators. That gain reduction is translated into the more common *gain* approach. The maximal possible attenuation is mapped to gain = 0 dB.  
-Depending on the selected band, a maximum gain from 83 dB (L) to 102 dB (AM2, VHF, III) is possible.
+    mkdir build
+    cd build
+    cmake ..
+    make
+    sudo make install
 
-* **`int mirisdr_set_tuner_gain (mirisdr_dev_t *p, int gain)`**
-
-sets the tuner total gain to the requested gain value. Requests with negative gain values are silently ignored. If a positive value exceeds the tuner capability, the max. possible gain is set. The function always returns 0 to indicate succuess.
-
-* **`int mirisdr_get_tuner_gain (mirisdr_dev_t *p)`**
-
-reports the actual total gain in dB. Expect some inaccuracy due to chip tolerances.
-
-* **`int mirisdr_set_mixer_gain (mirisdr_dev_t *p, int gain)`**
-* **`int mirisdr_set_mixbuffer_gain (mirisdr_dev_t *p, int gain)`**
-* **`int mirisdr_set_lna_gain (mirisdr_dev_t *p, int gain)i`**
-* **`int mirisdr_set_baseband_gain (mirisdr_dev_t *p, int gain)`**
-
-individually set the gain of the different stages. Note, that these are overwritten by a call to `mirisdr_set_tuner_gain()`. Note, that *IQ mixer* (`mixer_gain`) with 19 dB and *LNA* (`lna_gain`) with band-depended gain from 5 to 24 dB can only be switched on or off. The *upmixer* (`mixbuffer_gain`) takes discrete values of 0, 6, 12, 18 dB (AM1-band) or 0, 24 dB (AM2-band). The *baseband* gain ranges from 0 dB to 59 dB.
-
-* **`int mirisdr_get_mixer_gain (mirisdr_dev_t *p)`**
-* **`int mirisdr_get_mixbuffer_gain (mirisdr_dev_t *p)`**
-* **`int mirisdr_get_lna_gain (mirisdr_dev_t *p)`**
-* **`int mirisdr_get_baseband_gain(mirisdr_dev_t *p)`**
-
-return the gain in dB of the queried stage. If this stage is not in the actual signal path, the returned value is inaccurate since a non-current band must be assumed for the calculation. Would it be better return then zero?
-
-* **`	int mirisdr_set_tuner_gain_mode (mirisdr_dev_t *p, int mode)`**
-
-sets the tuner gain mode to either *automatic* (mode==0) or *manual* (mode!=0) and returns 0 if successful (-1 on error). Since no automatic mode is supported, this function will return an error on automatic mode request.
-
-* **`	int mirisdr_get_tuner_gain_mode (mirisdr_dev_t *p)`**
-
-returns the tuner gain mode. This function always returns *manual* (mode=1).
+The SoapySDR module is built too when the SoapySDR development files are installed. To use the receivers without root, copy `mirisdr.rules` to `/etc/udev/rules.d/`.
 
 
-<h3>DC Offset</h3>
+<h2>What is new in this version</h2>
 
-* **`int mirisdr_set_dc_raw (mirisdr_dev_t *p, uint32_t raw)`**
-* **`uint32_t mirisdr_get_dc_raw (mirisdr_dev_t *p)`**
+<h3>For users</h3>
 
-sets respectively gets the value in the dc mode control register. No sanity checks are performed. The 32-bit unsigned int value is encoded as (bit length in parentheses):
+  - **SDRplay RSP1B and RSPdx-R2 support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the RSPdx-R2's three antenna inputs and direct sampling below 2 MHz.
+  - **SDRplay RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier (in the gain) and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
+  - **A SoapySDR module.** Programs that use SoapySDR can use the receivers with `driver=mirisdr`. With `report=true` it logs what the receiver runs after each change: the rate, the IF, the NCO, direct sampling and more.
+  - **Low sample rates.** Any rate down to about 3.5 ksps, through the tuner's low IF.
+  - **High sample rates.** Up to 12 Msps with isochronous USB transfers, and about 27.5 Msps with bulk transfers.
+  - **Better reception on all MSi001 receivers.**
+  - **A stable stream.** The library loads its own firmware into the receiver when it opens it. Together they keep the stream running across rate changes, start and stop, and USB stalls, without resetting the receiver.
 
-`[ unused (4) | period (12) | unused (6) | track (6) | speedup (1) | mode (3) ]`
+<h3>For developers</h3>
 
-The default dc register setting is
-0x080001f2 (period = 0x800, track = 0x1f, speedup = 0, mode = 2).
+  - **One request for the tune and one for the stream.** A combination the receiver cannot do is refused. A value it has no exact step for is taken to the nearest, or refused on request (`strict`). The result says what is in force. The structs have room to grow, so programs keep working with newer versions.
+  - **Complex float output** at any IF, with the frequency you set at 0 Hz.
+  - **Time stamps** from a GNSS receiver's PPS output, so samples can be tied to real time, for example for TDOA. Without a PPS source the USB start of frame can be used. To use the SOF sync, you need a utility such as [sofcapture](https://github.com/BertoldVdb/sofcapture).
+  - **Lost samples** are found reliably, from markers the firmware puts in the stream. Each buffer says where its gaps are, and gaps can be filled with zeros so the timing stays right.
+  - **Events** say at which sample a tune or gain change took effect.
+  - **Fast tuning and scanning.** A tune is a single USB request. Lists of frequencies can hop in the receiver itself, with a report for every hop. The tuner's calibration can be learned once and replayed.
+  - **More stream options:** real modes that capture one converter and halve the USB data, a bypass of the receiver's own decimation filter for rates up to about 30 Msps, and an automatic choice of sample format.
+  - **More low-level functionality:** GPIO pins, a serial port, an I2C master, the infrared input, and the EEPROM.
+  - **A null device** that runs your own USB data through the library, for tests.
 
+<h3>Tools</h3>
+
+  - `miri_test` checks the receiver and the library for many known problems.
+  - `miri_eeprom` reads, writes and backs up the EEPROM. It can also put the firmware there, with a USB id and serial of your choice. See the SoapySDR guide before you do this.
